@@ -1,0 +1,14 @@
+文件说明（感觉自己快被绕晕）
+- traces：真实的trace源数据
+- data：
+    - pre_train_data/ & valid_data/ & pretrain-data-sync.py 合成数据的生成
+    - real_traces 根据traces打包成适合训练的格式
+- model
+    - baseline 实现lstm、cs2p等baseline。baseline的所有模型、训练、评测都在里面
+    - bocd 在线贝叶斯变点检测算法
+        - bocd.py 暴露接口都可用
+    - encoder 进行带宽推断的主模型
+        - model.py 主模型
+        - pretrain.py & fine-tuning 后训练模型
+    - validate 进行测试
+        - validate.py 测试主模型的脚本

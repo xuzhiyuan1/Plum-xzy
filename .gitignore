@@ -1,4 +1,13 @@
 .vscode/
+
+bwpred/data/pre_train_data
+bwpred/data/real_trace
+bwpred/data/valid_data
+bwpred/traces
+bwpred/model/**/*.pkl
+bwpred/model/**/*.pth
+bwpred/model/**/*.png
+
 temporary/
 ns-allinone-3.37/
 emulation/ns-allinone-3.37/
