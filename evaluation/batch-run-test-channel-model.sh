@@ -1,11 +1,12 @@
 #!/bin/bash
 
-export CORE_COUNT=20
+export CORE_COUNT=1
 
-declare -a seeds=(777 42 55 6 7 20 84 234 1000 81)
+# declare -a seeds=(777 42 55 6 7 20 84 234 1000 81)
+declare -a seeds=(777)
 declare -a nclients=(3)
-declare -a simTime=(1200)
-declare -a policies=(0 2)
+declare -a simTime=(60)
+declare -a policies=(0 2) #0 for vanilla, 2 for plum
 declare -a qoeType=(2)
 declare -a ulprops=(0.8)
 declare -a ackmaxcounts=(16)
@@ -62,3 +63,29 @@ export -f run_ns3
 echo "policy, nclient, seed, qoeType, avg_thp, min_thp, tail_thp, qoe, avg_rtt, rtt90, rtt95, rtt99, rtt999" > ${RESULT_DIR}/${filename_prefix}.csv
 
 parallel -j${CORE_COUNT} run_ns3 ::: ${policies[@]} ::: ${seeds[@]} ::: ${nclients[@]} ::: ${simTime} ::: ${qoeType[@]}
+
+cd ../../../evaluation
+echo "当前脚本切换到路径：$(pwd)"
+
+echo "==== 结果提取 ===="
+result_csv="results/result_channel_model.csv"
+
+# 提取Vanilla（policy=0）
+vanilla_line=$(awk -F',' '$1 ~ /^0$/ {print $0}' "$result_csv" | head -n 1)
+if [ -n "$vanilla_line" ]; then
+  avg_thp=$(echo $vanilla_line | awk -F',' '{print $5}')
+  qoe=$(echo $vanilla_line | awk -F',' '{print $8}')
+  echo "Vanilla（policy=0）时 Average_throuput = ${avg_thp}kbps QoE = ${qoe}"
+else
+  echo "Vanilla（policy=0）无结果"
+fi
+
+# 提取Plum（policy=2）
+plum_line=$(awk -F',' '$1 ~ /^2$/ {print $0}' "$result_csv" | head -n 1)
+if [ -n "$plum_line" ]; then
+  avg_thp=$(echo $plum_line | awk -F',' '{print $5}')
+  qoe=$(echo $plum_line | awk -F',' '{print $8}')
+  echo "Plum（policy=2）时 Average_throuput = ${avg_thp}kbps QoE = ${qoe}"
+else
+  echo "Plum（policy=2）无结果"
+fi

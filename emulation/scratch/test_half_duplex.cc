@@ -362,12 +362,12 @@ int main(int argc, char *argv[])
     {
         if (static_cast<DATASET>(dataset) == TR_GAME)
         {
-            MAX_TRACE_COUNT = 1115;
+            MAX_TRACE_COUNT = 2;
             trace_interval = 16;
         }
         else if (static_cast<DATASET>(dataset) == TR_RESTAURANT)
         {
-            MAX_TRACE_COUNT = 16;
+            MAX_TRACE_COUNT = 2;
             trace_interval = 100;
         }
     }
