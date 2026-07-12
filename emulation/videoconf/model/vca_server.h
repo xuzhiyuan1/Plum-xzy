@@ -34,12 +34,12 @@ namespace ns3
         QOE_TYPE_SQR_CONCAVE
     };
 
-    class ClientInfo : public Object
+    class VcaClientInfo : public Object
     {
     public:
         static TypeId GetTypeId(void);
-        ClientInfo();
-        ~ClientInfo();
+        VcaClientInfo();
+        ~VcaClientInfo();
 
         Ptr<Socket> socket_ul;
         Ptr<Socket> socket_dl;
@@ -90,6 +90,7 @@ namespace ns3
 
         void SetNodeId(uint32_t node_id);
         void SetPolicy(POLICY policy);
+        void SetMlPred(bool mlpred);
         void SetDlpercentage(double percentage);
         void SetSeparateSocket();
         void SetNumNode(uint8_t num_node);
@@ -167,7 +168,8 @@ namespace ns3
         std::unordered_map<uint32_t, uint8_t> m_dl_socket_id_map;
         uint8_t m_socket_id;
 
-        std::unordered_map<uint8_t, Ptr<ClientInfo>> m_client_info_map;
+        std::unordered_map<uint8_t, Ptr<VcaClientInfo>> m_client_info_map;
+        std::unordered_map<uint8_t, std::deque<double>> m_bw_history_map;
 
         TypeId m_tid;
 
@@ -215,8 +217,11 @@ namespace ns3
 
         int m_py_socket;
 
+        int m_ml_socket;
+        bool m_ml_pred;
+
     }; // class VcaServer
 
 }; // namespace ns3
 
-#endif
+#endif // VCA_SERVER_H

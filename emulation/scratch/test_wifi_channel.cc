@@ -14,7 +14,11 @@
 #include "ns3/yans-wifi-helper.h"
 #include "ns3/videoconf-module.h"
 
+#include <fstream>
+#include <sstream>
 using namespace ns3;
+
+double_t oracle_trace_bw_kbps = 0.0;
 
 NS_LOG_COMPONENT_DEFINE("MulticastEmulation");
 
@@ -103,6 +107,7 @@ int main(int argc, char *argv[])
   bool printPosition = false;
   bool savePcap = false;
   bool saveTransRate = false;
+  bool mlpred = false;
   double_t minBitrateKbps = 4.0;
   uint32_t kUlImprove = 3;
   double_t kDlYield = 0.5;
@@ -112,6 +117,7 @@ int main(int argc, char *argv[])
   uint32_t tack_max_count = 32;
   int qoeType = 0;
   double dl_percentage = 0.5;
+  std::string mobilityTrace = "mobility_trace.csv";
 
   // std::string Version = "80211n_5GHZ";
 
@@ -130,6 +136,7 @@ int main(int argc, char *argv[])
   cmd.AddValue("lowUlThresh", "Low UL threshold", kLowUlThresh);
   cmd.AddValue("highUlThresh", "High UL threshold", kHighUlThresh);
   cmd.AddValue("saveTransRate", "Save transmission rate", saveTransRate);
+  cmd.AddValue("mlpred", "Enable ML prediction for bandwidth", mlpred);
   cmd.AddValue("isTack", "Is TACK enabled", is_tack);
   cmd.AddValue("tackMaxCount", "Max TACK count", tack_max_count);
   cmd.AddValue("qoeType", "0 for lin, 1 for log, 2 for sqr_concave, 3 for sqr_convex", qoeType);
@@ -237,19 +244,55 @@ int main(int argc, char *argv[])
                                   UintegerValue(3),
                                   "LayoutType",
                                   StringValue("RowFirst"));
-    mobility.SetMobilityModel("ns3::RandomWalk2dMobilityModel",
-                              "Bounds",
-                              RectangleValue(Rectangle(-50, 50, 0, 50)));
-    for (uint32_t i = 0; i < nClient; i++)
-    {
-      mobility.Install(wifiStaNodes[i]);
-    }
+    // mobility.SetMobilityModel("ns3::RandomWalk2dMobilityModel",
+    //                           "Bounds",
+    //                           RectangleValue(Rectangle(-50, 50, 0, 50)));
+    // for (uint32_t i = 0; i < nClient; i++)
+    // {
+    //   mobility.Install(wifiStaNodes[i]);
+    // }
 
-    mobility.SetMobilityModel("ns3::ConstantPositionMobilityModel");
-    for (uint32_t i = 0; i < nClient; i++)
-    {
-      mobility.Install(wifiApNode[i]);
+    // mobility.SetMobilityModel("ns3::ConstantPositionMobilityModel");
+    // for (uint32_t i = 0; i < nClient; i++)
+    // {
+    //   mobility.Install(wifiApNode[i]);
+    // }
+
+    // --- [修改开始] ---
+    mobility.SetMobilityModel("ns3::WaypointMobilityModel");
+    mobility.Install(wifiStaNodes[0]); // 将模型安装到第 0 个 Client (也就是会移动的那个节点)
+
+    // 获取路点模型指针
+    Ptr<WaypointMobilityModel> waypointModel = wifiStaNodes[0].Get(0)->GetObject<WaypointMobilityModel>();
+    // 打开并解析外部的 CSV 轨迹文件
+    std::ifstream traceFile(mobilityTrace);
+    if (!traceFile.is_open()) {
+        NS_LOG_ERROR("CRITICAL ERROR: Failed to open mobility trace file: " << mobilityTrace);
+        exit(1);
     }
+    std::string line;
+    while (std::getline(traceFile, line)) {
+        if (line.empty() || line[0] == '#' || line[0] == 't') continue; 
+        std::stringstream ss(line);
+        std::string item;
+        double t = 0.0, x = 0.0, y = 0.0;
+        if (std::getline(ss, item, ',')) t = std::stod(item);
+        if (std::getline(ss, item, ',')) x = std::stod(item);
+        if (std::getline(ss, item, ',')) y = std::stod(item);
+        // 将文件中的轨迹点注入引擎
+        waypointModel->AddWaypoint(Waypoint(Seconds(t), Vector(x, y, 0.0)));
+    }
+    traceFile.close();
+    NS_LOG_DEBUG("[Mobility] Successfully loaded external mobility trace.");
+    // 对于其他的 Client 和所有的 AP，保持绝对静止
+    mobility.SetMobilityModel("ns3::ConstantPositionMobilityModel");
+    for (uint32_t i = 1; i < nClient; i++) {
+        mobility.Install(wifiStaNodes[i]);
+    }
+    for (uint32_t i = 0; i < nClient; i++) {
+        mobility.Install(wifiApNode[i]);
+    }
+    // --- [修改结束] ---
 
     InternetStackHelper stack;
     for (uint32_t i = 0; i < nClient; i++)
@@ -491,6 +534,7 @@ int main(int argc, char *argv[])
     vcaServerApp->SetPolicy(static_cast<POLICY>(policy));
     vcaServerApp->SetDlpercentage(dl_percentage);
     vcaServerApp->SetQoEType(static_cast<QOE_TYPE>(qoeType));
+    vcaServerApp->SetMlPred(mlpred);
     vcaServerApp->SetNodeId(sfuCenter.Get(0)->GetId());
     sfuCenter.Get(0)->AddApplication(vcaServerApp);
     vcaServerApp->SetStartTime(Seconds(0.0));
@@ -529,6 +573,7 @@ int main(int argc, char *argv[])
         vcaClientApp->SetNodeId(local_node->GetId());
         vcaClientApp->SetNumNode(nClient);
         vcaClientApp->SetPolicy(static_cast<POLICY>(policy));
+        vcaClientApp->SetMlPred(mlpred);
         vcaClientApp->SetUlDlParams(kUlImprove, kDlYield);
         vcaClientApp->SetUlThresh(kLowUlThresh, kHighUlThresh);
         vcaClientApp->SetMaxBitrate(maxBitrateKbps);

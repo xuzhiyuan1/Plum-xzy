@@ -7,6 +7,7 @@ import scipy.optimize as opt
 import matplotlib.pyplot as plt
 import socket
 import struct
+import threading
 from enum import Enum
 from struct import unpack
 
@@ -63,17 +64,11 @@ def solve(N, B, params):
     # parameters: N users, Bi bandwidth of user i, Bmax maximum bandwidth for the application
     # parameters: params = [rho, Bmax, QoE type, alpha, beta, v]
 
-    # S = np.sum(B) - np.max(B)
     B_ul_max = params[1] / params[5]
 
     # Constraints
-    # cons = [{'type': 'ineq', 'fun': lambda x: S - np.sum(x)}]
     cons = [{'type': 'ineq', 'fun': lambda x: np.sum(np.minimum(
         B - x, B_ul_max * np.ones(N))) - np.max(np.minimum(B, B_ul_max * np.ones(N) + x))}]
-    # for i in range(N):
-    #     cons.append({'type': 'ineq', 'fun': lambda x:  x[i]})
-    #     cons.append({'type': 'ineq', 'fun': lambda x:  min(B[i], params[1]) - x[i]})
-    # cons.append({'type': 'ineq', 'fun': lambda x:  S / N - x[i]})
 
     bnds = []
     for i in range(N):
@@ -84,7 +79,7 @@ def solve(N, B, params):
     res = opt.minimize(utility, x0=np.ones(N) * params[7], constraints=tuple(
         cons), bounds=tuple(bnds), callback=x.append, args=(params), method=params[6])
 
-    print(res.x)
+    # print(res.x) # 注释掉，防止高并发时终端刷屏
 
     if(params[8]):
         plt.plot(x[:], [utility(x[i], params) for i in range(len(x))], 'o-')
@@ -92,85 +87,100 @@ def solve(N, B, params):
 
     return res.x
 
-
-def socket_server(N):
+# ==========================================
+# 新增：单线程处理函数，处理每个 ns-3 客户端
+# ==========================================
+def handle_solver_client(csk, N):
     max_num = 20
+    try:
+        while True:
+            recv_req = csk.recv(1024)
+            if recv_req == b'':
+                continue
 
+            try:
+                num_users, num_view, qoe_type, rst, rho, max_bitrate, qoe_func_alpha, qoe_func_beta, capacity_string = unpack(
+                    '2Hil4d%ds' % (max_num * 8), recv_req)
+            except struct.error:
+                continue
+
+            if rst:
+                break # 收到结束信号，退出循环，释放当前 socket
+
+            capacities = unpack('%dd' % max_num, capacity_string)[:N]
+
+            assert(num_users == N)
+
+            qoe_type_name = QoeType(qoe_type).name
+
+            if max_bitrate <= 0:
+                print('MaxBitrate must be positive')
+                break
+            if qoe_type_name not in ['lin', 'log', 'sqr_concave', 'sqr_convex']:
+                print('QoeType must be one of ''lin'', ''log'', ''sqr_concave'', ''sqr_convex''')
+                break
+                
+            if qoe_type_name == 'lin':
+                qoe_func_alpha = 1.0 / max_bitrate
+            elif qoe_type_name == 'log':
+                qoe_func_alpha = 1.0 / math.log(max_bitrate + 1)
+            elif qoe_type_name == 'sqr_concave':
+                if qoe_func_alpha < 0 and qoe_func_alpha >= - 1.0 / max_bitrate / max_bitrate:
+                    qoe_func_alpha = qoe_func_alpha
+                else:
+                    qoe_func_alpha = - 1.0 / max_bitrate / max_bitrate
+                qoe_func_beta = 1.0 / max_bitrate - qoe_func_alpha * max_bitrate
+            elif qoe_type_name == 'sqr_convex':
+                if qoe_func_alpha > 0 and qoe_func_alpha < 1 / max_bitrate / (max_bitrate - 2):
+                    qoe_func_alpha = qoe_func_alpha
+                else:
+                    qoe_func_alpha = 1.0 / max_bitrate / max_bitrate
+                qoe_func_beta = 1.0 / max_bitrate - qoe_func_alpha * max_bitrate
+                
+            if num_view > num_users:
+                num_view = num_users
+
+            solution = solve(N, capacities, [
+                             rho, max_bitrate, qoe_type_name, qoe_func_alpha, qoe_func_beta, num_view, 'SLSQP', 30000.0, False]).tolist()
+
+            csk.send(struct.pack('%dd' % N, *solution))
+            
+    except Exception as e:
+        print(f"Error handling client: {e}")
+    finally:
+        try:
+            csk.shutdown(socket.SHUT_RDWR)
+        except:
+            pass
+        csk.close()
+
+# ==========================================
+# 修改：服务端监听函数，使用多线程分发
+# ==========================================
+def socket_server(N):
     if N < 3:
         print('N must be greater than 2')
         return
 
     addr = ("127.0.0.1", 11996 + N)
     sk = socket.socket(socket.AF_INET, socket.SOCK_STREAM, 0)
+    sk.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sk.bind(addr)
-    sk.listen(0)
-    csk, c_addr = sk.accept()
+    # 将排队长度设为 100，防止 20 个 ns-3 进程同时连上来时被操作系统拒绝
+    sk.listen(100) 
+    print(f"🚀 Multi-threaded Solver listening on port {11996 + N}, ready for 20x parallel runs...")
 
-    while True:
-        recv_req = csk.recv(1024)
-        if recv_req == b'':
-            continue
-
-        print(len(recv_req))
-
-        num_users, num_view, qoe_type, rst, rho, max_bitrate, qoe_func_alpha, qoe_func_beta, capacity_string = unpack(
-            '2Hil4d%ds' % (max_num * 8), recv_req)
-
-        if rst:
-            csk.shutdown(socket.SHUT_RDWR)
-            csk.close()
-            sk.listen(0)
+    try:
+        while True:
+            # 持续监听，收到新请求就开一个新线程去计算
             csk, c_addr = sk.accept()
-            continue
-
-        # print(capacity_string)
-        capacities = []
-        capacities = unpack('%dd' % max_num, capacity_string)[:N]
-
-        print("num_users", num_users)
-        print("num_view", num_view)
-        print("qoe_type", qoe_type)
-        print("rho", rho)
-        print("max_bitrate", max_bitrate)
-        print("qoe_func_alpha", qoe_func_alpha)
-        print("qoe_func_beta", qoe_func_beta)
-        print("capacities", capacities)
-
-        assert(num_users == N)
-
-        qoe_type_name = QoeType(qoe_type).name
-
-        if max_bitrate <= 0:
-            print('MaxBitrate must be positive')
-            return
-        if qoe_type_name not in ['lin', 'log', 'sqr_concave', 'sqr_convex']:
-            print(
-                'QoeType must be one of ''lin'', ''log'', ''sqr_concave'', ''sqr_convex''')
-            return
-        if qoe_type_name == 'lin':
-            qoe_func_alpha = 1.0 / max_bitrate
-        elif qoe_type_name == 'log':
-            qoe_func_alpha = 1.0 / math.log(max_bitrate + 1)
-        elif qoe_type_name == 'sqr_concave':
-            if qoe_func_alpha < 0 and qoe_func_alpha >= - 1.0 / max_bitrate / max_bitrate:
-                qoe_func_alpha = qoe_func_alpha
-            else:
-                qoe_func_alpha = - 1.0 / max_bitrate / max_bitrate
-            qoe_func_beta = 1.0 / max_bitrate - qoe_func_alpha * max_bitrate
-        elif qoe_type_name == 'sqr_convex':
-            if qoe_func_alpha > 0 and qoe_func_alpha < 1 / max_bitrate / (max_bitrate - 2):
-                qoe_func_alpha = qoe_func_alpha
-            else:
-                qoe_func_alpha = 1.0 / max_bitrate / max_bitrate
-            qoe_func_beta = 1.0 / max_bitrate - qoe_func_alpha * max_bitrate
-            
-        if num_view > num_users:
-            num_view = num_users
-
-        solution = solve(N, capacities, [
-                         rho, max_bitrate, qoe_type_name, qoe_func_alpha, qoe_func_beta, num_view, 'SLSQP', 30000.0, False]).tolist()
-
-        csk.send(struct.pack('%dd' % N, *solution))
+            t = threading.Thread(target=handle_solver_client, args=(csk, N))
+            t.daemon = True
+            t.start()
+    except KeyboardInterrupt:
+        print("Server shutdown.")
+    finally:
+        sk.close()
 
 
 def main():

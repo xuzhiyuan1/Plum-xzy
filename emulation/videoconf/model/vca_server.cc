@@ -1,5 +1,7 @@
 #include "vca_server.h"
 
+extern double_t oracle_trace_bw_kbps;
+
 namespace ns3
 {
     uint8_t DEBUG_SRC_SOCKET_ID = 0;
@@ -7,16 +9,16 @@ namespace ns3
 
     NS_LOG_COMPONENT_DEFINE("VcaServer");
 
-    TypeId ClientInfo::GetTypeId()
+    TypeId VcaClientInfo::GetTypeId()
     {
-        static TypeId tid = TypeId("ns3::ClientInfo")
+        static TypeId tid = TypeId("ns3::VcaClientInfo")
                                 .SetParent<Object>()
                                 .SetGroupName("videoconf")
-                                .AddConstructor<ClientInfo>();
+                                .AddConstructor<VcaClientInfo>();
         return tid;
     };
 
-    ClientInfo::ClientInfo()
+    VcaClientInfo::VcaClientInfo()
         : cc_target_frame_size(1e7 / 8 / 20),
           capacity_frame_size(1e7),
           dl_target_rate(0.0),
@@ -31,7 +33,7 @@ namespace ns3
           dl_rate(100),
           ul_target_rate(0.0) {};
 
-    ClientInfo::~ClientInfo() {};
+    VcaClientInfo::~VcaClientInfo() {};
 
     TypeId VcaServer::GetTypeId()
     {
@@ -55,7 +57,10 @@ namespace ns3
           m_separate_socket(0),
           m_opt_params(),
           m_policy(VANILLA),
-          m_dl_percentage(0) {};
+          m_dl_percentage(0),
+          m_py_socket(-1),
+          m_ml_socket(-1),
+          m_ml_pred(false) {};
 
     VcaServer::~VcaServer() {};
 
@@ -138,6 +143,11 @@ namespace ns3
         m_policy = policy;
     };
 
+    void 
+    VcaServer::SetMlPred(bool mlpred) {
+        m_ml_pred = mlpred;
+    }
+
     void
     VcaServer::SetDlpercentage(double percentage)
     {
@@ -199,8 +209,12 @@ namespace ns3
             }
         }
 
+        NS_LOG_DEBUG("Hey,policy="<<m_policy);
+
         if (m_policy == PLUM || m_policy == FIXED)
         {
+            NS_LOG_DEBUG("Hey2222,policy="<<m_policy);
+
             m_py_socket = socket(AF_INET, SOCK_STREAM, 0);
             if (m_py_socket == -1)
             {
@@ -214,6 +228,20 @@ namespace ns3
             while (connect(m_py_socket, (struct sockaddr *)&sock_addr, sizeof(sock_addr)) == -1)
             {
                 NS_LOG_DEBUG("[VcaServer] Connecting to the python server to connect");
+            }
+
+            if(m_ml_pred){
+                m_ml_socket = socket(AF_INET, SOCK_STREAM, 0);
+                struct sockaddr_in ml_addr;
+                ml_addr.sin_family = AF_INET;
+                ml_addr.sin_port = htons(9999);
+                ml_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+
+                while (connect(m_ml_socket, (struct sockaddr *)&ml_addr, sizeof(ml_addr)) < 0) {
+                    NS_LOG_DEBUG("[VcaServer] Waiting for Python AI Server on 9999...");
+                    sleep(1);
+                }
+                NS_LOG_DEBUG("[VcaServer] Connected to Python AI Server!");
             }
 
             // change triggering time
@@ -230,7 +258,7 @@ namespace ns3
         }
         for (auto it = m_client_info_map.begin(); it != m_client_info_map.end(); it++)
         {
-            Ptr<ClientInfo> client_info = it->second;
+            Ptr<VcaClientInfo> client_info = it->second;
             // these are accepted/connected sockets, close them
             client_info->socket_ul->Close();
             client_info->socket_dl->Close();
@@ -260,7 +288,7 @@ namespace ns3
         // Update m_cc_target_frame_size in a periodically invoked function
         for (auto it = m_client_info_map.begin(); it != m_client_info_map.end(); it++)
         {
-            Ptr<ClientInfo> client_info = it->second;
+            Ptr<VcaClientInfo> client_info = it->second;
             Ptr<Socket> socket_dl = client_info->socket_dl;
             Ptr<TcpSocketBase> dl_socketbase = DynamicCast<TcpSocketBase, Socket>(socket_dl);
             Address peerAddress;
@@ -345,9 +373,13 @@ namespace ns3
         Ptr<Packet> rx_data;
         Address peerAddress;
         socket->GetPeerName(peerAddress);
-        uint8_t socket_id = m_ul_socket_id_map[InetSocketAddress::ConvertFrom(peerAddress).GetIpv4().Get()];
+        if (socket->GetPeerName(peerAddress) == -1) {
+            NS_LOG_ERROR("[VcaServer] Failed to get peer name for socket ");
+            return;
+        }
 
-        Ptr<ClientInfo> client_info = m_client_info_map[socket_id];
+        uint8_t socket_id = m_ul_socket_id_map[InetSocketAddress::ConvertFrom(peerAddress).GetIpv4().Get()];
+        Ptr<VcaClientInfo> client_info = m_client_info_map[socket_id];
 
         while (true)
         {
@@ -436,7 +468,7 @@ namespace ns3
         NS_LOG_DEBUG("[VcaServer][Node" << m_node_id << "] HandleAccept ul socket " << socket);
         socket->SetRecvCallback(MakeCallback(&VcaServer::HandleRead, this));
 
-        Ptr<ClientInfo> client_info = CreateObject<ClientInfo>();
+        Ptr<VcaClientInfo> client_info = CreateObject<VcaClientInfo>();
         client_info->socket_ul = socket;
 
         Ipv4Address ul_peer_ip = InetSocketAddress::ConvertFrom(from).GetIpv4();
@@ -509,7 +541,7 @@ namespace ns3
         socket->GetPeerName(peerAddress);
         uint8_t socket_id = m_dl_socket_id_map[InetSocketAddress::ConvertFrom(peerAddress).GetIpv4().Get()];
 
-        Ptr<ClientInfo> client_info = m_client_info_map[socket_id];
+        Ptr<VcaClientInfo> client_info = m_client_info_map[socket_id];
 
         if (!client_info->send_buffer.empty())
         {
@@ -532,7 +564,7 @@ namespace ns3
     VcaServer::ReceiveData(Ptr<Packet> packet, uint8_t socket_id)
     {
         NS_LOG_LOGIC("[VcaServer] ReceiveData");
-        Ptr<ClientInfo> client_info = m_client_info_map[socket_id];
+        Ptr<VcaClientInfo> client_info = m_client_info_map[socket_id];
         uint16_t frame_id = client_info->app_header.GetFrameId();
         uint16_t pkt_id = client_info->app_header.GetPacketId();
         uint32_t payload_size = client_info->app_header.GetPayloadSize();
@@ -560,7 +592,7 @@ namespace ns3
         for (auto it = m_client_info_map.begin(); it != m_client_info_map.end(); it++)
         {
             uint8_t other_socket_id = it->first;
-            Ptr<ClientInfo> other_client_info = it->second;
+            Ptr<VcaClientInfo> other_client_info = it->second;
             if (other_socket_id == socket_id)
                 continue;
 
@@ -586,7 +618,7 @@ namespace ns3
     Ptr<Packet>
     VcaServer::TranscodeFrame(uint8_t src_socket_id, uint8_t dst_socket_id, Ptr<Packet> packet, uint16_t frame_id)
     {
-        Ptr<ClientInfo> src_client_info = m_client_info_map[src_socket_id];
+        Ptr<VcaClientInfo> src_client_info = m_client_info_map[src_socket_id];
 
         auto it = src_client_info->prev_frame_id.find(dst_socket_id);
         if (it == src_client_info->prev_frame_id.end())
@@ -652,7 +684,7 @@ namespace ns3
     uint32_t
     VcaServer::GetTargetFrameSize(uint8_t socket_id)
     {
-        Ptr<ClientInfo> client_info = m_client_info_map[socket_id];
+        Ptr<VcaClientInfo> client_info = m_client_info_map[socket_id];
 
         uint32_t manual_dl_share;
 
@@ -745,8 +777,13 @@ namespace ns3
         m_opt_params.num_users = m_num_node;
         NS_ASSERT_MSG(m_opt_params.num_users == m_client_info_map.size(), "num_users should be equal to the number of clients. m_client_info_map.size() = " << m_client_info_map.size());
 
-        send(m_py_socket, &m_opt_params, sizeof(m_opt_params), 0);
-        recv(m_py_socket, m_opt_alloc, sizeof(double_t) * m_opt_params.num_users, 0);
+        int send_res = send(m_py_socket, &m_opt_params, sizeof(m_opt_params), MSG_NOSIGNAL);
+        if (send_res > 0) {
+            recv(m_py_socket, m_opt_alloc, sizeof(double_t) * m_opt_params.num_users, 0);
+        } else {
+            // 如果没连上或者 Python 挂了，强制把数组清零，绝对不能留着内存垃圾 (NaN) ！！！
+            memset(m_opt_alloc, 0, sizeof(m_opt_alloc));
+        }
 
         // NS_LOG_DEBUG(m_opt_alloc[0] << " " << m_opt_alloc[1] << " " << m_opt_alloc[2]);
         if (!CheckOptResultsValidity())
@@ -755,7 +792,7 @@ namespace ns3
 
             for (auto it = m_client_info_map.begin(); it != m_client_info_map.end(); it++)
             {
-                Ptr<ClientInfo> client_info = it->second;
+                Ptr<VcaClientInfo> client_info = it->second;
                 client_info->ul_target_rate = 0.0;
                 client_info->dl_rate_control_state = NATRUAL;
             }
@@ -766,7 +803,7 @@ namespace ns3
         // send back to clients
         for (auto it = m_client_info_map.begin(); it != m_client_info_map.end(); it++)
         {
-            Ptr<ClientInfo> client_info = it->second;
+            Ptr<VcaClientInfo> client_info = it->second;
 
             if (m_policy == PLUM)
                 dl_alloc = m_opt_alloc[it->first];
@@ -818,7 +855,7 @@ namespace ns3
         double change_rate = 0;
         for (auto it = m_client_info_map.begin(); it != m_client_info_map.end(); it++)
         {
-            Ptr<ClientInfo> client_info = it->second;
+            Ptr<VcaClientInfo> client_info = it->second;
             Ptr<TcpSocketBase> ul_socket = DynamicCast<TcpSocketBase, Socket>(client_info->socket_ul);
             Ptr<TcpSocketBase> dl_socket = DynamicCast<TcpSocketBase, Socket>(client_info->socket_dl);
             uint64_t ul_bitrate = ul_socket->GetTcb()->m_pacingRate.Get().GetBitRate();
@@ -827,10 +864,54 @@ namespace ns3
             client_info->ul_rate = ul_bitrate / 1000.0;
             client_info->dl_rate = dl_bitrate / 1000.0;
 
-            double_t new_bitrate = (ul_bitrate + dl_bitrate) / 1000.0; // kbps
+            double_t current_bw_kbps = (ul_bitrate + dl_bitrate) / 1000.0; // kbps
+            double_t new_bitrate = current_bw_kbps;
+            NS_LOG_DEBUG("[VcaServer] UpdateCapacities, Client " << (uint16_t)it->first << " current_bw_kbps " << current_bw_kbps << " ul_bitrate=" << ul_bitrate <<" dl_bitrate=" << dl_bitrate);
+
+            if(m_ml_pred){
+                uint8_t client_id = it->first;
+                m_bw_history_map[client_id].push_back(current_bw_kbps);
+
+                if (m_bw_history_map[client_id].size() > 100) {
+                    m_bw_history_map[client_id].pop_front();
+                }
+
+                if (m_bw_history_map[client_id].size() == 100)
+                {
+                    double history_array[100];
+                    for(int i = 0; i < 100; i++) {
+                        // Python 模型那边 / SCALE_FACTOR (20.0)，所以我们传 Mbps 过去
+                        history_array[i] = m_bw_history_map[client_id][i] / 1000.0; 
+                    }
+
+                    // 1. 发送 100 个 Mbps 数据给 Python
+                    send(m_ml_socket, history_array, sizeof(history_array), 0);
+
+                    // 2. 阻塞接收 1 个预测结果 (Mbps)
+                    double predicted_bw_mbps = 0.0;
+                    recv(m_ml_socket, &predicted_bw_mbps, sizeof(double), 0);
+                    
+                    // 转回 kbps
+                    double_t predicted_bw_kbps = predicted_bw_mbps * 1000.0;
+
+                    // 3. 打破 BBR 滞后效应，给予 Transformer 预测值 20% 的权重！
+                    new_bitrate = 0.6 * current_bw_kbps + 0.4 * predicted_bw_kbps;
+                    // new_bitrate = oracle_trace_bw_kbps > 0 ? oracle_trace_bw_kbps*1.2 : new_bitrate;
+
+                    NS_LOG_DEBUG("[VcaServer] Client " << (uint16_t)it->first 
+                        << " | BBR: " << current_bw_kbps 
+                        << " | Transformer: " << predicted_bw_kbps 
+                        << " | oracle: " << oracle_trace_bw_kbps
+                        << " | Final: " << new_bitrate);                
+                }
+            }
+
             double_t old_bitrate = m_opt_params.capacities_kbps[it->first];
             m_opt_params.capacities_kbps[it->first] = new_bitrate;
-            change_rate = std::max(change_rate, abs(new_bitrate - old_bitrate) / old_bitrate);
+            if(old_bitrate < 1e-6) // to avoid divide-by-zero when the old bitrate is 0
+                change_rate = std::max(change_rate, 1.0);
+            else
+                change_rate = std::max(change_rate, abs(new_bitrate - old_bitrate) / old_bitrate);
         }
         double rearrange_threshold = 0.2; // a threshold to decide the network condtion changes
         if (change_rate > rearrange_threshold)

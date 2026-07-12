@@ -80,7 +80,8 @@ namespace ns3
           m_probe_patience_count(0),
           m_probe_patience_count_max(8),
           m_pkt_info(CreateObject<PktInfo>()),
-          m_ul_target_bitrate_kbps(0.0) {};
+          m_ul_target_bitrate_kbps(0.0),
+          m_ml_pred(false) {};
 
     VcaClient::~VcaClient() {};
 
@@ -161,6 +162,10 @@ namespace ns3
     {
         m_policy = policy;
     };
+
+    void VcaClient::SetMlPred(bool mlpred) {
+        m_ml_pred = mlpred;
+    }
 
     void VcaClient::SetLogFile(std::string log_file)
     {
@@ -251,6 +256,22 @@ namespace ns3
             m_socket_dl->SetCloseCallbacks(
                 MakeCallback(&VcaClient::HandlePeerClose, this),
                 MakeCallback(&VcaClient::HandlePeerError, this));
+        }
+
+
+        printf("[VcaClient][Node%d] Started,policy=%d\n", m_node_id, m_policy);
+        if(m_ml_pred){
+            m_ml_socket = socket(AF_INET, SOCK_STREAM, 0);
+            struct sockaddr_in serv_addr;
+            serv_addr.sin_family = AF_INET;
+            serv_addr.sin_port = htons(9999);
+            serv_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+
+            while (connect(m_ml_socket, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
+                NS_LOG_DEBUG("Waiting for Python AI Server...");
+                sleep(1);
+            }
+            NS_LOG_DEBUG("Connected to Python AI Server!");
         }
     };
 
@@ -610,7 +631,47 @@ namespace ns3
             }
             else
             {
-                m_bitrateBps[ul_id] = GetUlBottleneckBw();
+                if(m_ml_pred){
+                    double current_bw = (double)GetUlBottleneckBw();
+
+                    //1 记录历史队列
+                    m_bw_history.push_back(current_bw);
+                    if (m_bw_history.size() > 100) { // 保持过去 10 个步长
+                        m_bw_history.pop_front();
+                    }
+
+                    //2 核心修改：如果策略是你的 AI，并且数据攒够了 100 个，就呼叫 Transformer
+                    if (m_bw_history.size() == 100)
+                    {
+                        double history_array[100];
+                        for(int i=0; i<100; i++) history_array[i] = m_bw_history[i] / 1000000.0;
+
+                        // 发给 Python
+                        send(m_ml_socket, history_array, sizeof(history_array), 0);
+
+                        // 阻塞等待 Python 的 Transformer 推理结果
+                        double predicted_bw = 0.0;
+                        recv(m_ml_socket, &predicted_bw, sizeof(double), 0);
+                        predicted_bw = predicted_bw * 1000000.0;
+                        
+                        double bbr_bw = GetUlBottleneckBw();
+                        m_bitrateBps[ul_id] = 0.8 * bbr_bw + 0.4 * (uint32_t)predicted_bw; 
+                        
+                        
+                        NS_LOG_DEBUG("[VcaClient] Client " << (uint16_t)ul_id << " | BBR: " << bbr_bw 
+                            << " | Transformer: " << predicted_bw << " | Final: " << m_bitrateBps[ul_id]);   
+                    }
+                    else
+                    {
+                        // 如果还没攒够数据，或者跑的是原版基线，就依然用老方法
+                        m_bitrateBps[ul_id] = GetUlBottleneckBw();
+                    }
+                }
+                else{                
+                    m_bitrateBps[ul_id] = GetUlBottleneckBw();
+                }
+
+                
 
                 Ptr<TcpSocketBase> ul_socket = DynamicCast<TcpSocketBase, Socket>(*it);
 

@@ -51,6 +51,14 @@ struct GlobalKnowledge
 };
 
 static GlobalKnowledge global_know;
+double_t oracle_trace_bw_kbps = 0.0;
+
+// =========================================================================
+// 🌟 跨层桥梁：用于接收应用层 (VcaServer / Python) 传来的目标协同速率
+// 这两个数组对底层的物理 Trace 是透明的，它们就是“大脑”下达的命令
+// =========================================================================
+double_t global_ul_target_rate[50] = {0.0};
+double_t global_dl_target_rate[50] = {0.0};
 
 struct TraceElem
 {
@@ -97,6 +105,13 @@ void BandwidthTrace(TraceElem elem, uint32_t n_client)
     std::vector<std::string> bwValue;
 
     traceFile.open(elem.trace);
+
+    if (!traceFile.is_open()) {
+        NS_LOG_ERROR("CRITICAL BUG: Failed to open trace file: " << elem.trace);
+        std::cout << "CRITICAL BUG: Failed to open trace file: " << elem.trace << std::endl;
+        exit(1); 
+    }
+
     traceFile.seekg(elem.curr_pos);
     if (elem.curr_pos == std::ios::beg && !traceFile.eof() && elem.dataset == TR_GAME)
     {
@@ -104,13 +119,16 @@ void BandwidthTrace(TraceElem elem, uint32_t n_client)
     }
     std::getline(traceFile, traceLine);
     elem.curr_pos = traceFile.tellg();
+
+    NS_LOG_DEBUG("[BandwidthTrace] Reading File: " << elem.trace 
+              << " | Raw Line Content: '" << traceLine << "'");
+              
     if (traceLine.find('.') == std::string::npos)
     {
         traceFile.close();
         return;
     }
 
-    // bwValue.clear();
     traceData.clear();
     double_t total_bw = 600, ul_bw = 300, dl_bw = 300;
     if (elem.dataset == TR_GAME)
@@ -125,86 +143,57 @@ void BandwidthTrace(TraceElem elem, uint32_t n_client)
         total_bw = std::stod(bwValue[0]);
     }
 
-    if (elem.mode == EVEN_SPLIT)
+    NS_LOG_INFO("elem.mode=" << elem.mode << " total_bw: " << total_bw << "Mbps");
+
+    // ==========================================
+    // 🚀 核心修改：无情的水管工，严格执行大脑的协同指令！
+    // 物理层看不见 BBR，看不见 ML。它只认应用层传下来的比例，按比例切真实总带宽。
+    // ==========================================
+    double_t ul_target = global_ul_target_rate[elem.node_id];
+    double_t dl_target = global_dl_target_rate[elem.node_id];
+    double_t total_demand = ul_target + dl_target;
+    double_t effective_total_bw = total_bw;
+
+    if (total_demand > 0.001) 
     {
-        ul_bw = total_bw / 2;
-        dl_bw = total_bw / 2;
+        // 【杀手锏逻辑】：如果算法 (Plum-) 因为预测滞后，以为带宽还很大，
+        // 导致下达的 target_rate 总和大于当前的真实物理带宽...
+        if (total_demand > total_bw * 1.1) // 容忍 10% 的 BBR 探测波动
+        {
+            // 真实 WiFi 效应：需求超出越多，碰撞越激烈，真实能发出去的吞吐量越低！
+            double_t overload_ratio = total_demand / total_bw;
+            
+            // 惩罚公式：过载 2 倍，带宽减半。最低惩罚到总带宽的 20%
+            effective_total_bw = total_bw / overload_ratio; 
+            effective_total_bw = std::max(effective_total_bw, total_bw * 0.2);
+            
+            // NS_LOG_INFO("💥 [Overload Penalty] Demand: " << total_demand 
+            //           << " > Actual: " << total_bw 
+            //           << " -> Effective Bw crashed to: " << effective_total_bw);
+        }
 
-        dl_bw = std::min(dl_bw, elem.serverBwMbps);
-
-        NS_LOG_DEBUG("BwAlloc Node: " << (uint16_t)elem.node_id << " ul_bw: " << ul_bw << " dl_bw: " << dl_bw);
+        // 使用受惩罚后的“有效总带宽”进行切分
+        double_t alloc_ratio = ul_target / total_demand;
+        ul_bw = effective_total_bw * alloc_ratio;
+        dl_bw = effective_total_bw * (1.0 - alloc_ratio);
     }
-    else
+    else // 仿真刚启动，求解器还没下达命令时，暂时 50/50 对开
     {
-        if (global_know.clientSetTraceCount >= n_client)
-        {
-            global_know.clientSetTraceCount = 0;
-            global_know.prevAmpleBwUserExist = global_know.newAmpleBwUserExist;
-            global_know.prevMaxAbw = std::max(n_client * elem.minAppBitrateMbps, global_know.newMaxAbw);
-            global_know.newMaxAbw = 0;
-            global_know.newAmpleBwUserExist = 0;
-        }
-
-        double_t min_recv_rate = (n_client - 1) * elem.minAppBitrateMbps;
-        double_t app_limit_bw = n_client * elem.maxAppBitrateMbps;
-
-        if (total_bw < min_recv_rate)
-        {
-            ul_bw = total_bw / 2;
-            dl_bw = total_bw / 2;
-        }
-        else
-        {
-            if (global_know.prevAmpleBwUserExist)
-            {
-                if (total_bw < min_recv_rate + elem.maxAppBitrateMbps * 1.2)
-                {
-                    dl_bw = min_recv_rate;
-                    ul_bw = total_bw - dl_bw;
-
-                    NS_LOG_LOGIC("ul_bw: " << ul_bw << "Mbps, dl_bw: " << dl_bw << "Mbps line135");
-                }
-                else
-                {
-                    ul_bw = elem.maxAppBitrateMbps * 1.2;
-                    dl_bw = total_bw - ul_bw;
-                    NS_LOG_LOGIC("ul_bw: " << ul_bw << "Mbps, dl_bw: " << dl_bw << "Mbps line141");
-                }
-            }
-            else
-            {
-                double_t min_ul_bw_for_the_rest = (n_client - global_know.clientSetTraceCount - 1) * elem.minAppBitrateMbps;
-                double_t fair_share_for_the_rest = global_know.prevMaxAbw / (n_client - global_know.clientSetTraceCount);
-                ul_bw = std::min(std::max(elem.minAppBitrateMbps, std::min(global_know.prevMaxAbw - min_ul_bw_for_the_rest, fair_share_for_the_rest)), total_bw - min_recv_rate);
-                dl_bw = total_bw - ul_bw;
-
-                NS_LOG_LOGIC("ul_bw: " << ul_bw << "Mbps, dl_bw: " << dl_bw << "Mbps"
-                                       << " prevmaxabw: " << global_know.prevMaxAbw << "Mbps"
-                                       << " total_bw: " << total_bw << "Mbps"
-                                       << " min ul bw for the rest: " << min_ul_bw_for_the_rest << "Mbps"
-                                       << " fair share for the rest: " << fair_share_for_the_rest << "Mbps");
-
-                global_know.prevMaxAbw = std::max(0.0, global_know.prevMaxAbw - ul_bw);
-            }
-        }
-
-        dl_bw = std::min(dl_bw, elem.serverBwMbps);
-
-        NS_LOG_DEBUG("BwAlloc Node: " << (uint16_t)elem.node_id << " ul_bw: " << ul_bw << " dl_bw: " << dl_bw);
-
-        elem.prev_ul_bw = ul_bw;
-        elem.prev_dl_bw = dl_bw;
-
-        // Update global Knowledge
-        if (total_bw >= app_limit_bw)
-        {
-            global_know.newAmpleBwUserExist = 1;
-        }
-        global_know.newMaxAbw = std::max(global_know.newMaxAbw, total_bw);
-        global_know.clientSetTraceCount++;
+        ul_bw = total_bw / 2.0;
+        dl_bw = total_bw / 2.0;
     }
+    // ==========================================
 
-    /* Set delay of n0-n1 as rtt/2 - 1, the delay of n1-n2 is 1ms */
+    dl_bw = std::min(dl_bw, elem.serverBwMbps);
+
+    // 记录 oracle 值，仅仅为了给 Python 传 log 用作对比，绝不参与实际带宽决策
+    oracle_trace_bw_kbps = total_bw * 1000.0;
+
+    elem.prev_ul_bw = ul_bw;
+    elem.prev_dl_bw = dl_bw;
+
+    NS_LOG_DEBUG("BwAlloc Node: " << (uint16_t)elem.node_id << " raw_ul_bw: " << ul_bw << " raw_dl_bw: " << dl_bw);
+
     std::string ulBwStr = std::to_string(ul_bw) + "Mbps";
     std::string dlBwStr = std::to_string(dl_bw) + "Mbps";
 
@@ -255,7 +244,6 @@ std::string GetRandomTraceFile(uint32_t max_trace_count, uint8_t dataset)
 
 int main(int argc, char *argv[])
 {
-
     std::string mode = "p2p";
     uint8_t logLevel = 0;
     double_t simulationDuration = 10.0; // in s
@@ -265,6 +253,7 @@ int main(int argc, char *argv[])
     bool printPosition = false;
     bool savePcap = false;
     bool vary_bw = false;
+    bool mlpred = false;
     uint8_t trace_mode = 0;
     uint8_t dataset = 0;
     double_t ul_prop = 0.5;
@@ -277,8 +266,6 @@ int main(int argc, char *argv[])
 
     uint32_t MAX_TRACE_COUNT = 1115;
 
-    // std::string Version = "80211n_5GHZ";
-
     CommandLine cmd(__FILE__);
     cmd.AddValue("mode", "p2p or sfu mode", mode);
     cmd.AddValue("logLevel", "Log level: 0 for error, 1 for debug, 2 for logic", logLevel);
@@ -290,6 +277,7 @@ int main(int argc, char *argv[])
     cmd.AddValue("minBitrate", "Minimum tolerable bitrate in kbps", minBitrateKbps);
     cmd.AddValue("savePcap", "Save pcap file", savePcap);
     cmd.AddValue("varyBw", "Emulate in varying bandwidth or not", vary_bw);
+    cmd.AddValue("mlpred", "Enable ML prediction for bandwidth", mlpred);
     cmd.AddValue("traceMode", "0 for even split, 1 for uneven split", trace_mode);
     cmd.AddValue("ulProp", "Proportion of uplink bandwidth", ul_prop);
     cmd.AddValue("seed", "Random seed for trace selection", seed);
@@ -302,12 +290,8 @@ int main(int argc, char *argv[])
     Time::SetResolution(Time::NS);
     std::srand(seed);
 
-    // Config::SetDefault ("ns3::DropTailQueue<Packet>::MaxSize", QueueSizeValue (QueueSize ("1p")));
-    // Config::SetDefault ("ns3::TcpSocket::SndBufSize", UintegerValue (5 << 20)); // if (rwnd > 5M)，retransmission (RTO) will accumulate
-    // Config::SetDefault ("ns3::TcpSocket::RcvBufSize", UintegerValue (5 << 20)); // over 5M packets, causing packet metadata overflows.
     Config::SetDefault("ns3::TcpL4Protocol::SocketType", StringValue("ns3::TcpBbr"));
     Config::SetDefault("ns3::TcpSocket::SegmentSize", UintegerValue(1448));
-    // Config::SetDefault("ns3::TcpSocketBase::MinRto", TimeValue(MilliSeconds(200)));
 
     if (is_tack)
     {
@@ -319,7 +303,6 @@ int main(int argc, char *argv[])
         Config::SetDefault("ns3::TcpSocket::DelAckCount", UintegerValue(1));
     }
 
-    // set log level
     if (static_cast<LOG_LEVEL>(logLevel) == LOG_LEVEL::ERROR)
     {
         LogComponentEnable("VcaServer", LOG_LEVEL_ERROR);
@@ -341,12 +324,10 @@ int main(int argc, char *argv[])
 
     NS_LOG_DEBUG("[Scratch] SFU mode emulation started.");
 
-    // Create nodes
     NodeContainer sfuCenter, clientNodes;
     clientNodes.Create(nClient);
     sfuCenter.Create(1);
 
-    // Create backhaul links
     PointToPointHelper ulP2p[nClient], dlP2p[nClient];
     for (uint32_t i = 0; i < nClient; i++)
     {
@@ -356,7 +337,6 @@ int main(int argc, char *argv[])
         dlP2p[i].SetChannelAttribute("Delay", StringValue("10ms"));
     }
 
-    // Install NetDevices on backhaul links
     NetDeviceContainer ulDevices[nClient], dlDevices[nClient];
     if (vary_bw)
     {
@@ -381,17 +361,11 @@ int main(int argc, char *argv[])
         {
             std::string trace_dir;
             if (static_cast<DATASET>(dataset) == TR_GAME)
-            {
                 trace_dir = "../../../scripts/traces/gaming/";
-            }
             else if (static_cast<DATASET>(dataset) == TR_RESTAURANT)
-            {
                 trace_dir = "../../../scripts/traces/restaurant/";
-            }
 
             std::string trace_name = GetRandomTraceFile(MAX_TRACE_COUNT, dataset);
-            // std::string trace_dir = "../../../scripts/";
-            // std::string trace_name = "trace-debug.csv";
             std::string tracefile = trace_dir + trace_name;
             TraceElem elem = {tracefile, static_cast<TRACE_MODE>(trace_mode), static_cast<DATASET>(dataset), ulDevices[i].Get(0), dlDevices[i].Get(1), trace_interval, simulationDuration, (double_t)maxBitrateKbps / 1000., minBitrateKbps / 1000., server_bottleneck_mbps / (double_t)nClient, i, ul_prop};
             BandwidthTrace(elem, nClient);
@@ -399,11 +373,9 @@ int main(int argc, char *argv[])
     }
 
     InternetStackHelper stack;
-
     stack.Install(clientNodes);
     stack.Install(sfuCenter);
 
-    // Assign IPv4 addresses for NetDevices
     Ipv4AddressHelper ipAddr;
     std::string ip;
     Ipv4InterfaceContainer ulIpIfaces[nClient], dlIpIfaces[nClient];
@@ -418,23 +390,20 @@ int main(int argc, char *argv[])
         dlIpIfaces[i] = ipAddr.Assign(dlDevices[i]);
     }
 
-    // Install VcaClient Application for each user
     uint16_t client_ul = 80;
-    uint16_t client_dl = 8080; // dl_port may increase in VcaServer, make sure it doesn't overlap with ul_port
+    uint16_t client_dl = 8080;
     uint16_t client_peer = 80;
 
     std::list<Ipv4Address> serverUlAddrList;
 
     for (uint32_t id = 0; id < nClient; id++)
     {
-
         Ipv4Address clientUlAddr = ulIpIfaces[id].GetAddress(0);
         Ipv4Address clientDlAddr = dlIpIfaces[id].GetAddress(0);
         Ipv4Address serverUlAddr = ulIpIfaces[id].GetAddress(1);
 
         serverUlAddrList.push_back(serverUlAddr);
 
-        // Ipv4Address serverDlAddr = dlIpIfaces[id].GetAddress(1);
         NS_LOG_DEBUG("SFU VCA Client NodeId " << clientNodes.Get(id)->GetId() << " Server NodeId " << sfuCenter.Get(0)->GetId());
         Ptr<VcaClient> vcaClientApp = CreateObject<VcaClient>();
         vcaClientApp->SetFps(20);
@@ -446,9 +415,9 @@ int main(int argc, char *argv[])
         vcaClientApp->SetNodeId(clientNodes.Get(id)->GetId());
         vcaClientApp->SetNumNode(nClient);
         vcaClientApp->SetPolicy(static_cast<POLICY>(policy));
+        vcaClientApp->SetMlPred(mlpred);
         vcaClientApp->SetMaxBitrate(maxBitrateKbps);
         vcaClientApp->SetMinBitrate(minBitrateKbps);
-        // vcaClientApp->SetLogFile("../../../evaluation/results/trlogs/transient_rate_n" + std::to_string(nClient) + "_p" + std::to_string(trace_mode) + "_d" + std::to_string(dataset) + "_i" + std::to_string(clientNodes.Get(id)->GetId()) + ".txt");
         clientNodes.Get(id)->AddApplication(vcaClientApp);
 
         Simulator::Schedule(Seconds(simulationDuration), &VcaClient::StopEncodeFrame, vcaClientApp);
@@ -456,9 +425,7 @@ int main(int argc, char *argv[])
         vcaClientApp->SetStopTime(Seconds(simulationDuration + 4));
     }
 
-    // Install VcaServer Application for the server
     Ptr<VcaServer> vcaServerApp = CreateObject<VcaServer>();
-    // vcaServerApp->SetLocalAddress(serverUlAddr);
     vcaServerApp->SetLocalAddress(serverUlAddrList);
     vcaServerApp->SetLocalUlPort(client_peer);
     vcaServerApp->SetPeerDlPort(client_dl);
@@ -466,6 +433,8 @@ int main(int argc, char *argv[])
     vcaServerApp->SetNodeId(sfuCenter.Get(0)->GetId());
     vcaServerApp->SetSeparateSocket();
     vcaServerApp->SetNumNode(nClient);
+    vcaServerApp->SetPolicy(static_cast<POLICY>(policy));
+    vcaServerApp->SetMlPred(mlpred);
     sfuCenter.Get(0)->AddApplication(vcaServerApp);
     vcaServerApp->SetStartTime(Seconds(0.0));
     vcaServerApp->SetStopTime(Seconds(simulationDuration + 2));
@@ -474,9 +443,7 @@ int main(int argc, char *argv[])
     {
         AsciiTraceHelper ascii;
         ulP2p[0].EnablePcapAll("sfu-p2p");
-        // dlP2p[0].EnablePcapAll("sfu-p2p");
         ulP2p[0].EnableAsciiAll(ascii.CreateFileStream("sfu-ul.tr"));
-        // dlP2p[0].EnableAsciiAll(ascii.CreateFileStream("sfu-dl.tr"));
     }
 
     FlowMonitorHelper flowmonHelper;

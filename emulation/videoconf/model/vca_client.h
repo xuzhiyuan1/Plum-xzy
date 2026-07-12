@@ -18,6 +18,13 @@
 
 #include "prot-header.h"
 
+
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+
 enum PLUM_OLD_REALIZATION
 {
     PLUM_OLD_RWND,
@@ -82,6 +89,7 @@ namespace ns3
         void SetNumNode(uint8_t num_node);
 
         void SetPolicy(POLICY policy);
+        void SetMlPred(bool mlpred);
 
         void StopEncodeFrame();
 
@@ -225,6 +233,10 @@ namespace ns3
 
         // latency statistics related
         bool m_turn_on_latency_stats;
+
+        std::deque<double> m_bw_history;
+        int m_ml_socket;
+        bool m_ml_pred;
 
     }; // class VcaClient
 
