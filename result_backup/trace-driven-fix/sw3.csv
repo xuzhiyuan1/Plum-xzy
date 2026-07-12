@@ -1,0 +1,7 @@
+n,seed,cond,avg_thp,qoe
+3,1,reactive,3102292.33,1.26
+3,1,medianpred,2979606.33,1.25
+3,2,reactive,4594843.33,2.33
+3,2,medianpred,4491533.33,2.23
+3,3,reactive,4696156.67,2.54
+3,3,medianpred,4700730.00,2.54

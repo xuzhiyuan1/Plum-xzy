@@ -16,6 +16,7 @@
 
 #include <fstream>
 #include <sstream>
+#include <csignal>
 #include <cstdlib>
 
 using namespace ns3;
@@ -52,6 +53,15 @@ struct GlobalKnowledge
 
 static GlobalKnowledge global_know;
 double_t oracle_trace_bw_kbps = 0.0;
+
+// [sharedbw] 共享半双工介质 + 诊断:两条 P2P 用真实送达量耦合成一根总带宽 C
+bool g_shared_bw = false;
+bool g_diag_bw = false; // 仅诊断时打印 SharedDiag(会刷屏)
+bool g_pred_filter = false; // 用中位数滤波代替 Transformer 作为预测器
+uint64_t g_tx_bytes[256] = {0};
+uint64_t g_tx_bytes_prev[256] = {0};
+static void CountTx(uint32_t idx, Ptr<const Packet> pkt) { g_tx_bytes[idx] += pkt->GetSize(); }
+double_t g_observed_cap_kbps[256] = {0.0}; // [sharedbw] 发布给服务端的"实际送达总吞吐"观测(kbps),EWMA 平滑
 
 // =========================================================================
 // 🌟 跨层桥梁：用于接收应用层 (VcaServer / Python) 传来的目标协同速率
@@ -194,6 +204,26 @@ void BandwidthTrace(TraceElem elem, uint32_t n_client)
 
     NS_LOG_DEBUG("BwAlloc Node: " << (uint16_t)elem.node_id << " raw_ul_bw: " << ul_bw << " raw_dl_bw: " << dl_bw);
 
+    // [sharedbw] 用上/下行的实际送达速率(PhyTxEnd 字节)做诊断与耦合
+    uint32_t sd_ui = 2 * elem.node_id, sd_di = 2 * elem.node_id + 1;
+    double_t sd_iv = elem.interval / 1000.0;
+    double_t ul_used = (double_t)(g_tx_bytes[sd_ui] - g_tx_bytes_prev[sd_ui]) * 8.0 / sd_iv / 1e6;
+    double_t dl_used = (double_t)(g_tx_bytes[sd_di] - g_tx_bytes_prev[sd_di]) * 8.0 / sd_iv / 1e6;
+    g_tx_bytes_prev[sd_ui] = g_tx_bytes[sd_ui];
+    g_tx_bytes_prev[sd_di] = g_tx_bytes[sd_di];
+    if (g_shared_bw)
+    {
+        // 稳定共享:上行可用满 C;下行补上行没用掉的剩余 -> 总吞吐守恒 ~= C,分配由发送端决定
+        double_t bw_floor = std::max(0.5, total_bw * 0.05);
+        ul_bw = total_bw;
+        dl_bw = std::max(bw_floor, total_bw - ul_used);
+        // 发布"实际送达总吞吐"作为干净观测(EWMA 轻平滑),供服务端取代 pacing
+        g_observed_cap_kbps[elem.node_id] = std::max(total_bw * 0.05, (ul_used + dl_used)) * 1000.0; // 原始带噪观测(不EWMA):基线会抖,交给预测器去噪
+    }
+    if (g_diag_bw) std::cout << "[SharedDiag] node=" << elem.node_id << " C=" << total_bw
+              << " ul_used=" << ul_used << " dl_used=" << dl_used
+              << " total_used=" << (ul_used + dl_used)
+              << " ul_bw=" << ul_bw << " dl_bw=" << dl_bw << std::endl;
     std::string ulBwStr = std::to_string(ul_bw) + "Mbps";
     std::string dlBwStr = std::to_string(dl_bw) + "Mbps";
 
@@ -285,6 +315,9 @@ int main(int argc, char *argv[])
     cmd.AddValue("tackMaxCount", "Max TACK count", tack_max_count);
     cmd.AddValue("dataset", "Dataset to use", dataset);
     cmd.AddValue("serverBtl", "Server bottleneck in Mbps", server_bottleneck_mbps);
+    cmd.AddValue("sharedbw", "Shared half-duplex medium", g_shared_bw);
+    cmd.AddValue("diagbw", "print SharedDiag diagnostics", g_diag_bw);
+    cmd.AddValue("predfilter", "use median filter instead of Transformer", g_pred_filter);
 
     cmd.Parse(argc, argv);
     Time::SetResolution(Time::NS);
@@ -322,6 +355,7 @@ int main(int argc, char *argv[])
         LogComponentEnable("MulticastEmulation", LOG_LEVEL_LOGIC);
     }
 
+    signal(SIGPIPE, SIG_IGN); // [robust] 断管别杀仿真
     NS_LOG_DEBUG("[Scratch] SFU mode emulation started.");
 
     NodeContainer sfuCenter, clientNodes;
@@ -356,6 +390,8 @@ int main(int argc, char *argv[])
     {
         ulDevices[i] = ulP2p[i].Install(clientNodes.Get(i), sfuCenter.Get(0));
         dlDevices[i] = dlP2p[i].Install(clientNodes.Get(i), sfuCenter.Get(0));
+        ulDevices[i].Get(0)->TraceConnectWithoutContext("PhyTxEnd", MakeBoundCallback(&CountTx, 2 * i));
+        dlDevices[i].Get(1)->TraceConnectWithoutContext("PhyTxEnd", MakeBoundCallback(&CountTx, 2 * i + 1));
 
         if (vary_bw)
         {

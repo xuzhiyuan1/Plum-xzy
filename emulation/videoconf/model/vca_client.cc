@@ -652,6 +652,7 @@ namespace ns3
                         // 阻塞等待 Python 的 Transformer 推理结果
                         double predicted_bw = 0.0;
                         recv(m_ml_socket, &predicted_bw, sizeof(double), 0);
+                        if (predicted_bw < 0.0) predicted_bw = 0.0; // [robust]
                         predicted_bw = predicted_bw * 1000000.0;
                         
                         double bbr_bw = GetUlBottleneckBw();

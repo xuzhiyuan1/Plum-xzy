@@ -22,6 +22,9 @@ using namespace ns3;
 
 NS_LOG_COMPONENT_DEFINE("MulticastEmulation");
 
+double_t oracle_trace_bw_kbps = 0.0;
+double_t g_observed_cap_kbps[256] = {0.0}; // 补链接符号 // [diag] 补链接缺失的全局(与其他 scratch 一致)
+
 enum LOG_LEVEL
 {
     ERROR,

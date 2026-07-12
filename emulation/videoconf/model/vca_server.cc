@@ -1,6 +1,10 @@
 #include "vca_server.h"
 
 extern double_t oracle_trace_bw_kbps;
+extern double_t g_observed_cap_kbps[256]; // [sharedbw] 实际送达总吞吐观测
+extern bool g_pred_filter;
+#include <algorithm>
+#include <vector>
 
 namespace ns3
 {
@@ -454,6 +458,7 @@ namespace ns3
             if (client_info->read_status == 4)
             {
                 ReceiveData(client_info->half_payload, socket_id);
+                client_info->ul_recv_bytes += client_info->payload_size; // [diag] count delivered UL bytes
                 client_info->read_status = 0;
                 client_info->set_header = 0;
                 client_info->half_payload->RemoveAtEnd(client_info->payload_size);
@@ -865,6 +870,8 @@ namespace ns3
             client_info->dl_rate = dl_bitrate / 1000.0;
 
             double_t current_bw_kbps = (ul_bitrate + dl_bitrate) / 1000.0; // kbps
+            if (g_observed_cap_kbps[it->first] > 1.0)
+                current_bw_kbps = g_observed_cap_kbps[it->first]; // [sharedbw] 用实际送达吞吐当观测,不用虚高的 pacing
             double_t new_bitrate = current_bw_kbps;
             NS_LOG_DEBUG("[VcaServer] UpdateCapacities, Client " << (uint16_t)it->first << " current_bw_kbps " << current_bw_kbps << " ul_bitrate=" << ul_bitrate <<" dl_bitrate=" << dl_bitrate);
 
@@ -890,18 +897,31 @@ namespace ns3
                     // 2. 阻塞接收 1 个预测结果 (Mbps)
                     double predicted_bw_mbps = 0.0;
                     recv(m_ml_socket, &predicted_bw_mbps, sizeof(double), 0);
+                    if (predicted_bw_mbps < 0.0) predicted_bw_mbps = 0.0; // [robust]
                     
                     // 转回 kbps
                     double_t predicted_bw_kbps = predicted_bw_mbps * 1000.0;
+                    if (g_pred_filter) {
+                        std::vector<double_t> hh(m_bw_history_map[client_id].begin(), m_bw_history_map[client_id].end());
+                        std::sort(hh.begin(), hh.end());
+                        predicted_bw_kbps = hh[hh.size() / 2]; // 中位数滤波估计 hidden 容量
+                    }
 
                     // 3. 打破 BBR 滞后效应，给予 Transformer 预测值 20% 的权重！
                     new_bitrate = 0.6 * current_bw_kbps + 0.4 * predicted_bw_kbps;
+                    if (new_bitrate < 1.0) new_bitrate = 1.0; // [robust] 容量不为负
+                    Time diag_now = Simulator::Now(); // [diag]
+                    double diag_dt = (diag_now - client_info->ul_recv_time_prev).GetSeconds();
+                    double ul_delivered_kbps = (diag_dt > 1e-6) ? (double)(client_info->ul_recv_bytes - client_info->ul_recv_bytes_prev) * 8.0 / diag_dt / 1000.0 : 0.0;
+                    client_info->ul_recv_bytes_prev = client_info->ul_recv_bytes;
+                    client_info->ul_recv_time_prev = diag_now;
                     // new_bitrate = oracle_trace_bw_kbps > 0 ? oracle_trace_bw_kbps*1.2 : new_bitrate;
 
                     NS_LOG_DEBUG("[VcaServer] Client " << (uint16_t)it->first 
                         << " | BBR: " << current_bw_kbps 
                         << " | Transformer: " << predicted_bw_kbps 
                         << " | oracle: " << oracle_trace_bw_kbps
+                        << " | UL_delivered: " << ul_delivered_kbps
                         << " | Final: " << new_bitrate);                
                 }
             }
