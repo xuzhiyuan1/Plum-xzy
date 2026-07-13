@@ -73,6 +73,11 @@ namespace ns3
 
         double_t ul_target_rate; // in kbps
 
+        // [diag] 实际 UL 送达字节统计 (只 log, 不参与决策)
+        uint64_t ul_recv_bytes = 0;
+        uint64_t ul_recv_bytes_prev = 0;
+        Time ul_recv_time_prev = Seconds(0);
+
     }; // class ClientInfo
 
     class VcaServer : public Application
