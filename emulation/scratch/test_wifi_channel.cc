@@ -20,6 +20,12 @@ using namespace ns3;
 
 double_t oracle_trace_bw_kbps = 0.0;
 double_t g_observed_cap_kbps[256] = {0.0}; // 补链接符号
+bool g_lag_obs = false;
+bool g_fast_pred = false;
+bool g_pred_filter = false;
+double_t g_fast_cap_kbps[256] = {0.0};
+double_t global_ul_target_rate[50] = {0.0};
+double_t global_dl_target_rate[50] = {0.0};
 
 NS_LOG_COMPONENT_DEFINE("MulticastEmulation");
 

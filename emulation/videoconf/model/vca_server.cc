@@ -1,6 +1,8 @@
 #include "vca_server.h"
 
 extern double_t oracle_trace_bw_kbps;
+extern double_t global_ul_target_rate[50];
+extern double_t global_dl_target_rate[50];
 extern double_t g_observed_cap_kbps[256]; // [sharedbw] 实际送达总吞吐观测
 extern bool g_pred_filter;
 extern double_t g_fast_cap_kbps[256];
@@ -823,6 +825,8 @@ namespace ns3
 
             client_info->ul_target_rate = ul_alloc;
             client_info->dl_target_rate = dl_alloc;
+            global_ul_target_rate[it->first] = ul_alloc / 1000.0; // [fix] 把分配接到物理链路(Mbps)
+            global_dl_target_rate[it->first] = dl_alloc / 1000.0;
 
             NS_LOG_DEBUG("[VcaServer] Opti Client " << (uint16_t)it->first << " ul_target_rate " << client_info->ul_target_rate << " dl_target_rate " << client_info->dl_target_rate << " capacity " << m_opt_params.capacities_kbps[it->first] << " ul_rate " << client_info->ul_rate << " dl_rate " << client_info->dl_rate);
 
