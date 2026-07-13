@@ -58,6 +58,12 @@ double_t oracle_trace_bw_kbps = 0.0;
 bool g_shared_bw = false;
 bool g_diag_bw = false; // 仅诊断时打印 SharedDiag(会刷屏)
 bool g_pred_filter = false; // 用中位数滤波代替 Transformer 作为预测器
+bool g_clean_obs = false; // 用干净送达吞吐观测;关=用BBR观测(model-based那种)
+bool g_lag_obs = false; // reactive用强滞后观测(模拟BBR滞后)
+bool g_smooth_bw = false; // 把驱动带宽平滑成慢变hidden(让BBR跟得住但滞后)
+bool g_fast_pred = false; // [诊断]预测=当前hidden水平(完美补滞后天花板)
+double_t g_smooth_total[256] = {0.0};
+double_t g_fast_cap_kbps[256] = {0.0}; // 快信号(给预测器)
 uint64_t g_tx_bytes[256] = {0};
 uint64_t g_tx_bytes_prev[256] = {0};
 static void CountTx(uint32_t idx, Ptr<const Packet> pkt) { g_tx_bytes[idx] += pkt->GetSize(); }
@@ -153,6 +159,13 @@ void BandwidthTrace(TraceElem elem, uint32_t n_client)
         total_bw = std::stod(bwValue[0]);
     }
 
+    if (g_smooth_bw)
+    {
+        if (g_smooth_total[elem.node_id] < 0.01) g_smooth_total[elem.node_id] = total_bw;
+        g_smooth_total[elem.node_id] = 0.04 * total_bw + 0.96 * g_smooth_total[elem.node_id]; // 慢变hidden
+        total_bw = g_smooth_total[elem.node_id];
+        g_fast_cap_kbps[elem.node_id] = total_bw * 1000.0; // 当前hidden水平,供 fastpred 诊断
+    }
     NS_LOG_INFO("elem.mode=" << elem.mode << " total_bw: " << total_bw << "Mbps");
 
     // ==========================================
@@ -218,7 +231,15 @@ void BandwidthTrace(TraceElem elem, uint32_t n_client)
         ul_bw = total_bw;
         dl_bw = std::max(bw_floor, total_bw - ul_used);
         // 发布"实际送达总吞吐"作为干净观测(EWMA 轻平滑),供服务端取代 pacing
-        g_observed_cap_kbps[elem.node_id] = std::max(total_bw * 0.05, (ul_used + dl_used)) * 1000.0; // 原始带噪观测(不EWMA):基线会抖,交给预测器去噪
+        if (g_clean_obs || g_lag_obs)
+        {
+            double_t raw_kbps = std::max(total_bw * 0.05, (ul_used + dl_used)) * 1000.0;
+            g_fast_cap_kbps[elem.node_id] = raw_kbps; // 快信号(近似当前真实C)
+            if (g_lag_obs)
+                g_observed_cap_kbps[elem.node_id] = 0.03 * raw_kbps + 0.97 * g_observed_cap_kbps[elem.node_id]; // 强滞后
+            else
+                g_observed_cap_kbps[elem.node_id] = raw_kbps;
+        }
     }
     if (g_diag_bw) std::cout << "[SharedDiag] node=" << elem.node_id << " C=" << total_bw
               << " ul_used=" << ul_used << " dl_used=" << dl_used
@@ -318,6 +339,10 @@ int main(int argc, char *argv[])
     cmd.AddValue("sharedbw", "Shared half-duplex medium", g_shared_bw);
     cmd.AddValue("diagbw", "print SharedDiag diagnostics", g_diag_bw);
     cmd.AddValue("predfilter", "use median filter instead of Transformer", g_pred_filter);
+    cmd.AddValue("cleanobs", "use delivered-throughput observation (vs BBR)", g_clean_obs);
+    cmd.AddValue("lagobs", "reactive uses laggy observation (mimic BBR lag)", g_lag_obs);
+    cmd.AddValue("smoothbw", "smooth link capacity to slow hidden level (BBR lags it)", g_smooth_bw);
+    cmd.AddValue("fastpred", "[diag] prediction = current hidden level (perfect de-lag ceiling)", g_fast_pred);
 
     cmd.Parse(argc, argv);
     Time::SetResolution(Time::NS);

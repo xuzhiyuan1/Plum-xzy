@@ -3,6 +3,9 @@
 extern double_t oracle_trace_bw_kbps;
 extern double_t g_observed_cap_kbps[256]; // [sharedbw] 实际送达总吞吐观测
 extern bool g_pred_filter;
+extern double_t g_fast_cap_kbps[256];
+extern bool g_lag_obs;
+extern bool g_fast_pred;
 #include <algorithm>
 #include <vector>
 
@@ -901,6 +904,9 @@ namespace ns3
                     
                     // 转回 kbps
                     double_t predicted_bw_kbps = predicted_bw_mbps * 1000.0;
+                    if ((g_lag_obs || g_fast_pred) && g_fast_cap_kbps[it->first] > 1.0) {
+                        predicted_bw_kbps = g_fast_cap_kbps[it->first]; // 预测=快信号(去滞后),填补 reactive 漏掉的gap
+                    }
                     if (g_pred_filter) {
                         std::vector<double_t> hh(m_bw_history_map[client_id].begin(), m_bw_history_map[client_id].end());
                         std::sort(hh.begin(), hh.end());
