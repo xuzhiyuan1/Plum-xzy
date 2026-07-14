@@ -1,0 +1,4 @@
+无上帝视角: test_wifi_trace_tuned (NS3原生WiFi 802.11p + AR(1)距离调制)
+AR(1)参数按真实restaurant trace校准: meanDist=8 sigma=0.6 rho=0.9 bounds[2,22] => vanilla吞吐CoV=0.37
+决策链: Plum policy=2 用 BBR 自身估计; mlpred=1 时 Transformer 只吃系统观测(融合已修0.6/0.4)
+任何决策不接触真实trace值。n∈{3,4}=无collapse干净工作点。simTime=600。
