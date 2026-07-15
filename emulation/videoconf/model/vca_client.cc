@@ -656,7 +656,7 @@ namespace ns3
                         predicted_bw = predicted_bw * 1000000.0;
                         
                         double bbr_bw = GetUlBottleneckBw();
-                        m_bitrateBps[ul_id] = 0.8 * bbr_bw + 0.4 * (uint32_t)predicted_bw; 
+                        m_bitrateBps[ul_id] = 0.6 * bbr_bw + 0.4 * (uint32_t)predicted_bw; 
                         
                         
                         NS_LOG_DEBUG("[VcaClient] Client " << (uint16_t)ul_id << " | BBR: " << bbr_bw 
