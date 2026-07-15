@@ -1,0 +1,1 @@
+simTime=1200 版; 不覆盖600版(在 nogod-wifi-tuned/)
