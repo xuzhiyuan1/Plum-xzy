@@ -1,4 +1,5 @@
 #include "vca_server.h"
+#include "ns3/rng-seed-manager.h"
 
 extern double_t oracle_trace_bw_kbps;
 extern double_t global_ul_target_rate[50];
@@ -220,7 +221,7 @@ namespace ns3
 
         NS_LOG_DEBUG("Hey,policy="<<m_policy);
 
-        if (m_policy == PLUM || m_policy == FIXED)
+        if (m_policy == PLUM || m_policy == FIXED || m_green) // [green] vanilla needs solver conn for energy accounting
         {
             NS_LOG_DEBUG("Hey2222,policy="<<m_policy);
 
@@ -776,6 +777,19 @@ namespace ns3
         return dl_addr;
     };
 
+
+    void
+    VcaServer::SetGreen(bool green)
+    {
+        m_green = green;
+    };
+
+    void
+    VcaServer::SetObsDelivered(bool v)
+    {
+        m_obs_delivered = v;
+    };
+
     void
     VcaServer::OptimizeAllocation()
     {
@@ -787,9 +801,42 @@ namespace ns3
         m_opt_params.num_users = m_num_node;
         NS_ASSERT_MSG(m_opt_params.num_users == m_client_info_map.size(), "num_users should be equal to the number of clients. m_client_info_map.size() = " << m_client_info_map.size());
 
-        int send_res = send(m_py_socket, &m_opt_params, sizeof(m_opt_params), MSG_NOSIGNAL);
+        int send_res;
+        if (m_green)
+        {
+            m_green_params.run_id = (double_t)RngSeedManager::GetRun();
+            m_green_params.sim_time_s = Simulator::Now().GetSeconds();
+            Time gp_now = Simulator::Now();
+            double_t gp_ul_sum = 0.0;
+            std::unordered_map<uint8_t, double_t> gp_ul;
+            for (auto it = m_client_info_map.begin(); it != m_client_info_map.end(); it++)
+            {
+                Ptr<VcaClientInfo> ci = it->second;
+                double_t gdt = (gp_now - ci->gp_prev_time).GetSeconds();
+                double_t gkbps = (gdt > 1e-6) ? (double_t)(ci->ul_recv_bytes - ci->gp_ul_bytes_prev) * 8.0 / gdt / 1000.0 : 0.0;
+                ci->gp_ul_bytes_prev = ci->ul_recv_bytes;
+                ci->gp_prev_time = gp_now;
+                gp_ul[it->first] = gkbps;
+                gp_ul_sum += gkbps;
+            }
+            for (auto it = m_client_info_map.begin(); it != m_client_info_map.end(); it++)
+            {
+                m_green_params.ul_rate_kbps[it->first] = gp_ul[it->first];
+                m_green_params.dl_rate_kbps[it->first] = gp_ul_sum - gp_ul[it->first]; // SFU delivered
+            }
+            uint8_t green_buf[sizeof(m_opt_params) + sizeof(m_green_params)];
+            memcpy(green_buf, &m_opt_params, sizeof(m_opt_params));
+            memcpy(green_buf + sizeof(m_opt_params), &m_green_params, sizeof(m_green_params));
+            send_res = send(m_py_socket, green_buf, sizeof(green_buf), MSG_NOSIGNAL);
+        }
+        else
+        {
+            send_res = send(m_py_socket, &m_opt_params, sizeof(m_opt_params), MSG_NOSIGNAL);
+        }
         if (send_res > 0) {
             recv(m_py_socket, m_opt_alloc, sizeof(double_t) * m_opt_params.num_users, 0);
+            if (m_green)
+                recv(m_py_socket, m_green_ulcap, sizeof(double_t) * m_opt_params.num_users, 0);
         } else {
             // 如果没连上或者 Python 挂了，强制把数组清零，绝对不能留着内存垃圾 (NaN) ！！！
             memset(m_opt_alloc, 0, sizeof(m_opt_alloc));
@@ -854,7 +901,22 @@ namespace ns3
             // update ul rate control state
             if (client_info->ul_target_rate > client_info->ul_rate)
             {
-                client_info->ul_target_rate = 0.0; // let the client grow by its own CCA
+                if (!m_obs_delivered) // [obsdeliv] keep allocation as UL cap (delivered obs is not inflated)
+                    client_info->ul_target_rate = 0.0; // let the client grow by its own CCA
+            }
+
+            // [obsdeliv] floor the UL cap so transient observation collapse cannot strangle recovery
+            if (m_obs_delivered && client_info->ul_target_rate > 0.5 && client_info->ul_target_rate < 200.0)
+                client_info->ul_target_rate = 200.0;
+
+            // [green] apply green/thermal upload cap from solver (m_green only)
+            if (m_green && m_green_ulcap[it->first] > 0.5)
+            {
+                double_t ulcap = m_green_ulcap[it->first];
+                if (client_info->ul_target_rate < 0.5 || client_info->ul_target_rate > ulcap)
+                    client_info->ul_target_rate = ulcap;
+                if (global_ul_target_rate[it->first] > ulcap / 1000.0)
+                    global_ul_target_rate[it->first] = ulcap / 1000.0;
             }
         }
     };
@@ -863,6 +925,25 @@ namespace ns3
     VcaServer::UpdateCapacities()
     {
         // updating the network capacities
+
+        // [obsdeliv] pass 1: delivered UL rates from receive-side byte counters
+        std::unordered_map<uint8_t, double_t> od_ul_kbps;
+        double_t od_ul_sum = 0.0;
+        if (m_obs_delivered)
+        {
+            Time od_now = Simulator::Now();
+            for (auto it = m_client_info_map.begin(); it != m_client_info_map.end(); it++)
+            {
+                Ptr<VcaClientInfo> ci = it->second;
+                double_t od_dt = (od_now - ci->od_prev_time).GetSeconds();
+                double_t kbps = (od_dt > 1e-6) ? (double_t)(ci->ul_recv_bytes - ci->od_ul_bytes_prev) * 8.0 / od_dt / 1000.0 : 0.0;
+                ci->od_ul_bytes_prev = ci->ul_recv_bytes;
+                ci->od_prev_time = od_now;
+                ci->od_ul_ewma = (ci->od_ul_ewma < 0.0) ? kbps : 0.7 * ci->od_ul_ewma + 0.3 * kbps; // smooth transient stalls
+                od_ul_kbps[it->first] = ci->od_ul_ewma;
+                od_ul_sum += ci->od_ul_ewma;
+            }
+        }
 
         double change_rate = 0;
         for (auto it = m_client_info_map.begin(); it != m_client_info_map.end(); it++)
@@ -875,6 +956,16 @@ namespace ns3
 
             client_info->ul_rate = ul_bitrate / 1000.0;
             client_info->dl_rate = dl_bitrate / 1000.0;
+
+            if (m_obs_delivered) // [obsdeliv] override pacing with delivered rates
+            {
+                double_t od_ul = od_ul_kbps[it->first];
+                double_t od_dl = od_ul_sum - od_ul; // SFU: client receives all other streams
+                client_info->ul_rate = od_ul;
+                client_info->dl_rate = od_dl;
+                ul_bitrate = (uint64_t)(od_ul * 1000.0);
+                dl_bitrate = (uint64_t)(od_dl * 1000.0);
+            }
 
             double_t current_bw_kbps = (ul_bitrate + dl_bitrate) / 1000.0; // kbps
             if (g_observed_cap_kbps[it->first] > 1.0)
@@ -944,7 +1035,7 @@ namespace ns3
                 change_rate = std::max(change_rate, abs(new_bitrate - old_bitrate) / old_bitrate);
         }
         double rearrange_threshold = 0.2; // a threshold to decide the network condtion changes
-        if (change_rate > rearrange_threshold)
+        if (change_rate > rearrange_threshold || m_green) // [green] periodic for energy integration
             Simulator::ScheduleNow(&VcaServer::OptimizeAllocation, this);
 
         Simulator::Schedule(MilliSeconds(500), &VcaServer::UpdateCapacities, this);
@@ -957,7 +1048,13 @@ namespace ns3
 
         for (auto it = m_client_info_map.begin(); it != m_client_info_map.end(); it++)
         {
-            if (m_opt_alloc[it->first] <= 2000 || m_opt_params.capacities_kbps[it->first] - m_opt_alloc[it->first] <= 1000)
+            double_t od_cap = m_opt_params.capacities_kbps[it->first];
+            if (m_obs_delivered) // [obsdeliv] relative thresholds (absolute ones assume tens-of-Mbps capacities)
+            {
+                if (m_opt_alloc[it->first] <= 0.05 * od_cap || od_cap - m_opt_alloc[it->first] <= 0.05 * od_cap)
+                    return false;
+            }
+            else if (m_opt_alloc[it->first] <= 2000 || od_cap - m_opt_alloc[it->first] <= 1000)
             {
                 return false;
             }

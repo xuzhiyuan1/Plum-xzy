@@ -75,6 +75,11 @@ namespace ns3
 
         // [diag] 实际 UL 送达字节统计 (只 log, 不参与决策)
         uint64_t ul_recv_bytes = 0;
+        uint64_t od_ul_bytes_prev = 0;   // [obsdeliv]
+        Time od_prev_time = Seconds(0);  // [obsdeliv]
+        double_t od_ul_ewma = -1.0;      // [obsdeliv] smoothed delivered UL
+        uint64_t gp_ul_bytes_prev = 0;   // [green] delivered feed for energy
+        Time gp_prev_time = Seconds(0);  // [green]
         uint64_t ul_recv_bytes_prev = 0;
         Time ul_recv_time_prev = Seconds(0);
 
@@ -96,6 +101,8 @@ namespace ns3
         void SetNodeId(uint32_t node_id);
         void SetPolicy(POLICY policy);
         void SetMlPred(bool mlpred);
+        void SetGreen(bool green);
+        void SetObsDelivered(bool v);
         void SetDlpercentage(double percentage);
         void SetSeparateSocket();
         void SetNumNode(uint8_t num_node);
@@ -224,6 +231,18 @@ namespace ns3
 
         int m_ml_socket;
         bool m_ml_pred;
+
+        // [green] energy-aware closed loop (all gated by m_green, default off)
+        bool m_green = false;
+        bool m_obs_delivered = false; // [obsdeliv] use delivered rates instead of pacing
+        struct GreenParams
+        {
+            double_t run_id;
+            double_t sim_time_s;
+            double_t ul_rate_kbps[MAX_NUM_USERS];
+            double_t dl_rate_kbps[MAX_NUM_USERS];
+        } m_green_params;
+        double_t m_green_ulcap[MAX_NUM_USERS];
 
     }; // class VcaServer
 

@@ -115,6 +115,8 @@ int main(int argc, char *argv[])
   bool savePcap = false;
   bool saveTransRate = false;
   bool mlpred = false;
+  bool green = false;
+  bool obsdeliv = false;
   double_t minBitrateKbps = 4.0;
   uint32_t kUlImprove = 3;
   double_t kDlYield = 0.5;
@@ -144,6 +146,8 @@ int main(int argc, char *argv[])
   cmd.AddValue("highUlThresh", "High UL threshold", kHighUlThresh);
   cmd.AddValue("saveTransRate", "Save transmission rate", saveTransRate);
   cmd.AddValue("mlpred", "Enable ML prediction for bandwidth", mlpred);
+  cmd.AddValue("green", "Enable energy-aware green allocation (needs green-capable solver)", green);
+  cmd.AddValue("obsdeliv", "Use delivered rates (not pacing) as capacity observation", obsdeliv);
   cmd.AddValue("isTack", "Is TACK enabled", is_tack);
   cmd.AddValue("tackMaxCount", "Max TACK count", tack_max_count);
   cmd.AddValue("qoeType", "0 for lin, 1 for log, 2 for sqr_concave, 3 for sqr_convex", qoeType);
@@ -542,6 +546,8 @@ int main(int argc, char *argv[])
     vcaServerApp->SetDlpercentage(dl_percentage);
     vcaServerApp->SetQoEType(static_cast<QOE_TYPE>(qoeType));
     vcaServerApp->SetMlPred(mlpred);
+    vcaServerApp->SetGreen(green);
+    vcaServerApp->SetObsDelivered(obsdeliv);
     vcaServerApp->SetNodeId(sfuCenter.Get(0)->GetId());
     sfuCenter.Get(0)->AddApplication(vcaServerApp);
     vcaServerApp->SetStartTime(Seconds(0.0));

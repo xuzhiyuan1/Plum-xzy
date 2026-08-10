@@ -1,0 +1,14 @@
+{
+  "batt_scale": 0.7,
+  "time_accel": 3.0,
+  "k_lambda": 1.5,
+  "csv_dir": "/home/xuzy/Plum-for-award/Plum/green/ns3_green_logs",
+  "profiles": [
+    {"batt_Wh": 12, "soc0": 0.30, "charging": 0},
+    {"batt_Wh": 12, "soc0": 0.27, "charging": 0},
+    {"batt_Wh": 12, "soc0": 0.60, "charging": 0},
+    {"batt_Wh": 12, "soc0": 0.65, "charging": 0},
+    {"batt_Wh": 45, "soc0": 0.80, "charging": 0},
+    {"batt_Wh": 45, "soc0": 0.90, "charging": 1}
+  ]
+}

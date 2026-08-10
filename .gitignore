@@ -1,5 +1,17 @@
 .vscode/
 
+# Local OS/editor metadata
+*.bak_green
+green/td_green_logs/
+.DS_Store
+Thumbs.db
+
+# TON literature downloads and API caches are reproducible local assets.
+# Keep them on the school server, but do not add large/copyrighted artifacts to Git.
+docs/past_ton/cache/
+docs/past_ton/pdfs/
+docs/past_ton/_env_check/
+
 bwpred/data/pre_train_data
 bwpred/data/real_trace
 bwpred/data/valid_data

@@ -92,12 +92,28 @@ def solve(N, B, params):
 # ==========================================
 def handle_solver_client(csk, N):
     max_num = 20
+    import os as _os, sys as _sys
+    _d = _os.path.dirname(_os.path.abspath(__file__))
+    if _d not in _sys.path:
+        _sys.path.append(_d)
+    legacy_size = struct.calcsize('2Hil4d%ds' % (max_num * 8))
+    green_extra = 16 + 2 * max_num * 8
+    green_state = None
     try:
         while True:
             recv_req = csk.recv(1024)
             if recv_req == b'':
                 continue
 
+            green_req = None
+            if len(recv_req) == legacy_size + green_extra:
+                _tail = recv_req[legacy_size:]
+                _grid = unpack('d', _tail[:8])[0]
+                _gt = unpack('d', _tail[8:16])[0]
+                _gu = unpack('%dd' % max_num, _tail[16:16 + max_num * 8])
+                _gd = unpack('%dd' % max_num, _tail[16 + max_num * 8:])
+                green_req = (_gt, _gu, _gd, _grid)
+                recv_req = recv_req[:legacy_size]
             try:
                 num_users, num_view, qoe_type, rst, rho, max_bitrate, qoe_func_alpha, qoe_func_beta, capacity_string = unpack(
                     '2Hil4d%ds' % (max_num * 8), recv_req)
@@ -140,10 +156,17 @@ def handle_solver_client(csk, N):
             if num_view > num_users:
                 num_view = num_users
 
-            solution = solve(N, capacities, [
-                             rho, max_bitrate, qoe_type_name, qoe_func_alpha, qoe_func_beta, num_view, 'SLSQP', 30000.0, False]).tolist()
-
-            csk.send(struct.pack('%dd' % N, *solution))
+            params_g = [rho, max_bitrate, qoe_type_name, qoe_func_alpha, qoe_func_beta, num_view, 'SLSQP', 30000.0, False]
+            if green_req is not None:
+                if green_state is None:
+                    import green_energy
+                    green_state = green_energy.GreenState(N, run_id=green_req[3])
+                green_state.step(green_req[0], green_req[1][:N], green_req[2][:N])
+                gsol, gulcap = green_state.solve_green(np.array(capacities, dtype=float), params_g, utility)
+                csk.send(struct.pack('%dd' % (2 * N), *(list(gsol) + list(gulcap))))
+            else:
+                solution = solve(N, capacities, params_g).tolist()
+                csk.send(struct.pack('%dd' % N, *solution))
             
     except Exception as e:
         print(f"Error handling client: {e}")

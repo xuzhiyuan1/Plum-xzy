@@ -1,0 +1,10 @@
+{
+  "k_lambda": 1.5, "throttle_ufrac": 0.4, "umax_mbps": 4.0,
+  "batt_scale": 0.7, "time_accel": 3.0,
+  "csv_dir": "/home/xuzy/Plum-for-award/Plum/green/ns3_green_logs_n3_lam15",
+  "profiles": [
+    {"batt_Wh": 12, "soc0": 0.30, "charging": 0},
+    {"batt_Wh": 12, "soc0": 0.60, "charging": 0},
+    {"batt_Wh": 45, "soc0": 0.80, "charging": 0}
+  ]
+}
