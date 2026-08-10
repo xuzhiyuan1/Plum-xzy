@@ -1,0 +1,165 @@
+% !TEX program = xelatex
+% 中文草稿 - IEEEtran 双栏期刊骨架 + xeCJK 中文
+% 编译: cd docs/ton26/draft && latexmk -xelatex main.tex
+\documentclass[journal,10pt]{IEEEtran}
+
+% xeCJK 中文支持
+\usepackage{xeCJK}
+\setCJKmainfont[Path=/home/xuzy/.TinyTeX/texmf-dist/fonts/opentype/public/fandol/, BoldFont={FandolSong-Bold.otf}]{FandolSong-Regular.otf}
+\setCJKsansfont[Path=/home/xuzy/.TinyTeX/texmf-dist/fonts/opentype/public/fandol/, BoldFont={FandolHei-Bold.otf}]{FandolHei-Regular.otf}
+\setCJKmonofont[Path=/home/xuzy/.TinyTeX/texmf-dist/fonts/opentype/public/fandol/]{FandolFang-Regular.otf}
+
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{cite}
+\usepackage{hyperref}
+\usepackage{xcolor}
+
+% 占位符标注宏
+\newcommand{\todoexp}[1]{\textcolor{red}{【待补实验: #1】}}
+\newcommand{\tododesign}[1]{\textcolor{red}{【待补设计: #1】}}
+\newcommand{\todothy}[1]{\textcolor{red}{【待验证假设: #1】}}
+\newcommand{\prelim}[1]{\textcolor{blue}{#1}}
+
+\title{预测驱动与能耗感知的双向带宽协调：\\面向半双工瓶颈的实时视频流}
+\author{草稿 v2 — 基于 \texttt{result\_backup} 实证}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+WLAN 半双工信道使上下行流共享物理信道并趋于公平分配，但对双向体积流应用（视频会议、AR/VR、远程驾驶）次优。本文在 Plum（ICNP'24）双向带宽协调基础上扩展两条线：(1) 预测增强 PLUM，用 Transformer 带宽预测前瞻参与容量观测与分配；(2) Green-PLUM，在分配中引入设备剩余电量 SoC 与温度，对低电/过热设备降码率换更长存活与温度稳定。我们将两者统一为``预测驱动、能耗感知的双向协调''多目标优化，保持 Plum 不修改 MAC、在传输层以上协调的部署友好性。\prelim{初步结果（口径受限）}：在 model-based 原生 Wi-Fi、$N\in\{3,4,6\}$、10 seeds 下，预测使吞吐 +17.04\%、QoE +6.73\%；在 trace-driven、$N=8$、3 seeds（初步，统计不足）下，Green 相比 Plum 把会议结束存活设备从约 2 提升到 4、峰值温度从约 60\,°C 降至约 47\,°C，代价为平均吞吐下降约 42\%。\todoexp{Pred+Green 联合、$\geq$10 seed 置信区间、预测失效边界}。\todothy{预测误差对最优分配的扰动界}。能耗为文献锚定建模值，非真机实测；温度/功耗模型尚需校准。
+\end{abstract}
+
+\begin{IEEEkeywords}
+双向带宽协调，半双工瓶颈，视频流，QoE，带宽预测，能耗感知，过热降频，Wi-Fi
+\end{IEEEkeywords}
+
+\section{引言}
+双向体积流应用（AR/VR 社交、4K 视频会议、远程驾驶）普遍产生上下行并重流量~\cite{ton0580,ton0191,ton0289}。WLAN 半双工信道下，上下行依据 802.11 MAC 趋于统计公平分配，但应用视角的``不公平''分配可最大化 QoE。Plum（ICNP'24）提出应用层双向带宽协调：以 Hossfeld 多用户 QoE 效用为目标，SLSQP 求解最优双向分配，entangled state machine 一致执行，不修改 MAC~\cite{plum2024}。
+
+期刊扩展需超越会议版。本文提出两条扩展并论证可统一：
+\begin{itemize}
+  \item \textbf{预测增强}：现有 Plum 容量检测反应式（BBR），滞后于信道波动。引入 Transformer 预测前瞻参与容量观测，model-based Wi-Fi 下吞吐 +17.04\%\prelim{（已有初步结果）}。但 trace-driven 部分配置存在``吞吐对预测结构性不敏感''的失效边界——本文给出该边界与机理\todoexp{失效边界机理解释}。
+  \item \textbf{Green-PLUM}：Plum 只优化画质，忽略电量与温度。低电设备掉线、过热降频致画面崩塌。Green 叠加 SoC/温度约束，对低电/过热设备按 $\lambda$ 缩放码率，换存活与温度稳定，代价为部分画质。
+\end{itemize}
+
+\noindent\textbf{贡献}（仅列已有证据支撑者）：
+\begin{enumerate}
+  \item 扩展 Plum 为预测增强与能耗感知双向协调，给出统一多目标优化框架形式\tododesign{统一性待 Pred+Green 联合实验证实}。
+  \item 实现 \texttt{--green}/\texttt{--obsdeliv} 的 C++/solver 闭环协议与 SoC/温度状态机（已实现）。
+  \item 在 model-based 与 trace-driven 两平台评估五对照\prelim{（部分已有初步结果）}\todoexp{P0 实验待补}。
+  \item \todothy{预测误差对最优分配的扰动界——未推导，暂不作为定理贡献}。
+\end{enumerate}
+
+\section{背景与动机}
+\textbf{双向体积流}：远程驾驶、视频会议、AR/VR 均上下行并重~\cite{ton0580}。WLAN 半双工：AP 下行与客户端上行竞争同信道，DCF 下趋于统计公平。应用视角的不公平分配可最大化 QoE。现有速率控制单向：ABR 与 CC 均只控出流，缺双向协调~\cite{ton0066,ton0191,ton0450}。能耗/热新维度：长会议中设备耗电发热，过热降频致画面崩塌~\cite{ton0205,ton0534}。
+
+\section{原始 Plum 回顾}
+\textbf{系统模型}：$N$ 客户端经 SFU，$u_i+d_i\le B_i$，下行受内容源约束。QoE 效用
+\begin{equation}
+U(\mathbf d)=(1-\rho)\,Q(\mathbf d)+\rho\,F,\quad F=1-2\sigma(Q),
+\end{equation}
+$Q(\cdot)$ 为归一化单用户 QoE，$\sigma$ 为用户间 QoE 标准差，$\rho$ 平衡均值性能与公平性。优化 $\max_{\mathbf d} U$，SLSQP 求解；Theorem 1/2（网络/应用受限特殊情形）。系统：服务器主导 entangled state machine，不侵入 CC。实验：平均用户码率较最优 baseline +48--59\%~\cite{plum2024}。
+
+\section{系统模型}
+沿用 Plum 并扩展：每客户端新增 $\mathrm{SoC}_i\in[0,1]$、温度 $T_i$、充电 $c_i$。瞬时功率（文献锚定建模）：
+\begin{equation}
+E_i(u,d)=P_{\text{base}}+(1.3u+d)\,e_{\text{bit}}(u+d)+P_{\text{enc}}\!\left(\tfrac{u}{u_{\text{ref}}}\right)^{t_{\text{enc}}}+P_{\text{dec}}\tfrac{d}{d_{\text{ref}}},
+\end{equation}
+其中 $e_{\text{bit}}(\Theta)=a/\Theta+b$（nJ/bit）。校准：$(u,d)=(2,6)$\,Mbps 时整机 3.74\,W$\approx$IMC'21 实测 4\,W。热模型（一阶 RC + 滞回节流）：
+\begin{equation}
+T_i\leftarrow T_i+\frac{\Delta t}{\tau_T}(T_{\text{amb}}+R_{\text{th}}E_i-T_i),\quad T\ge 41\,°C\text{ 触发降频}.
+\end{equation}
+
+\section{问题建模}
+统一目标：
+\begin{equation}
+\max_{\mathbf d}\; U(\mathbf d)-\sum_i \lambda_i\frac{E_i(u_i,d_i)-P_{\text{base}}}{P_{\text{ref}}},
+\end{equation}
+$\lambda_i=k(1-\mathrm{SoC}_i)^m$（充电 $\lambda_i=0$），$u_i=B_i-d_i$ 受 UL cap 约束。\todothy{预测误差 $\epsilon$ 对 $\mathbf d^*$ 的扰动界——计划用灵敏度分析，需假设效用 Lipschitz、误差有界；未推导前不写入贡献。}
+
+\section{预测增强 PLUM}
+Transformer 预测服务 + solver 并发查询；\texttt{--mlpred} 下容量观测从反应式 BBR 切换为预测融合（vca\_client 权重 0.6）。结果\prelim{（已有初步结果，model-based 802.11p@10\,MHz, policy=2, $N\in\{3,4,6\}$, 10 seeds）}：
+
+\begin{table}[ht]
+\centering\small
+\caption{预测增强 PLUM 在 model-based Wi-Fi 下的结果（10 seeds 聚合）。}
+\label{tab:pred}
+\begin{tabular}{lccc}
+\toprule
+指标 & w/o ML Pred & w/ ML Pred & 提升 \\
+\midrule
+吞吐 avg\_thp & 317231.71 & 371283.09 & +17.04\% \\
+QoE & 0.1140 & 0.1217 & +6.73\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent 适用范围：仅 model-based + $N\in\{3,4,6\}$。trace-driven 部分配置结构性不敏感（天花板实验）\todoexp{失效边界机理解释}。
+
+\section{Green-PLUM}
+三套实现严格区分（禁止混用数字）：
+\begin{itemize}
+  \item (1) 独立数值模型（\texttt{green/}，6 设备 60\,min）\prelim{（已有初步结果）}：first\_death Vanilla 32\,min / Plum 38.7\,min / Green 52\,min；alive\_end 3/4/4；过热累计 Plum 260$\to$Green 89 设备·分钟。
+  \item (2) solver 闭环（\texttt{--green}）\textcolor{red}{【实现但未可靠验证：结果缺失】}。
+  \item (3) trace-driven 包级（\texttt{test\_half\_duplex\_paper.cc}，$N=8$, 3 seeds）\prelim{（已有初步结果，统计不足）}：
+\end{itemize}
+
+\begin{table}[ht]
+\centering\small
+\caption{Green-PLUM trace-driven 包级仿真结果（$N=8$, 3 seeds，初步）。}
+\label{tab:green}
+\begin{tabular}{lccc}
+\toprule
+指标 & Vanilla & Plum & Green \\
+\midrule
+平均下行码率 (Mbps) & 4.75 & 9.33 & 5.40 \\
+最差用户下行 (Mbps) & 2.18 & 6.57 & 3.73 \\
+存活（均值） & $\sim$1.3/8 & 2/8 & 4/8 \\
+峰值温度 & $\sim$92\,°C & $\sim$60\,°C & $\sim$47\,°C \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent 注：92\,°C 与单设备峰值功率 $\sim$20\,W 为模型 artifact，物理偏极端，投稿前须校准（见 §讨论）。Green 代价：吞吐比 Plum 低约 42\%。
+
+\section{统一控制与优化}
+\tododesign{预测$\to$能耗决策的耦合机制}：当前 Green 的 UL cap/$\lambda$ 仅依赖当前 SoC/温度，\textbf{不依赖未来带宽信息}，故预测与 Green 当前为松耦合。统一叙事成立需：(a) 让 Green 决策受预测未来容量调制（如预判信道变差时提前降速省电降温）；(b) Pred+Green 联合实验证实预测改善能耗/温度。\textbf{当前两者未形成统一系统。}
+
+\section{实现}
+\texttt{--green} 扩展 C++/solver 协议（run\_id, sim\_time, 每客户端 UL/DL 送达速率）；solver 积分 SoC/温度返回 DL 分配 + UL cap。\texttt{--obsdeliv}：接收侧送达字节 EWMA(0.7/0.3) 替代 pacing，带下限。\texttt{green\_energy.py}：\texttt{GreenState} 维护 SoC/温度/存活，\texttt{solve\_green} 叠加 $\lambda$ 加权能耗项。UL cap：$u_i\le u_{\text{max}}/(1+2\lambda_i)$。默认关闭，旧实验行为不变。
+
+\section{评估方法}
+平台：NS-3.37 + videoconf SFU, TCP+BBR。两套：model-based 原生 Wi-Fi；trace-driven Fig.11 独立接入（餐厅 Wi-Fi trace 11--36\,Mbps）。对照：Vanilla/Plum/Pred/Green/Pred+Green。$N\in\{3,4,6,8\}$；目标 $\geq$10 seeds（Green 当前 3）。指标：吞吐/QoE/最差用户/fairness/RTT/功率/总能耗/掉线时间/存活/过热时间/solver 开销/控制开销。\todoexp{置信区间、RTT/solver 开销/控制开销记录}。
+
+\section{已有初步结果}
+见 Table~\ref{tab:pred} 与 Table~\ref{tab:green}。所有数字须以 $\geq$10-seed 重跑结果替换。
+
+\section{实验缺口}
+见 \texttt{TON投稿准备度与缺口分析.md} 与 \texttt{当前实验进度与证据清单.md}。投稿前最重要：统计严谨性（3$\to$10 seed+CI）、Pred+Green 联合、预测失效边界、能耗模型校准（92\,°C/20\,W）、Green 主线选定+R1(seq312)对比。
+
+\section{相关工作}
+\textbf{R1（直接竞争）}：seq312 Bi-Level Bandwidth Coordination for Video Inference\todoexp{取得全文对比}~\cite{ton0312}。\\
+\textbf{R2（方法借鉴）}：Conflux（多链路 ABR）~\cite{ton0191}；Pudica（交互视频 CC）~\cite{ton0066}；Libra（通用 CC 框架）~\cite{ton0033}；INCC（主动瓶颈 CC）~\cite{ton0231}；QoE-Fairness（异构 CC 公平）~\cite{ton0383}；NeuroBA（神经符号 ABR）~\cite{ton0442}；5G-RAN-QUIC（跨层分析）~\cite{ton0420}；BIFROST（CDN-CC 解耦）~\cite{ton0450}；Compass（含 Plum 作者）~\cite{ton0495}；FAR（速率控制）~\cite{ton0467}；AraLivePro（RL 奖励自适应）~\cite{ton0583}；QoE-UAV-MEC（能耗约束）~\cite{ton0205}；EEFL（移动设备能耗）~\cite{ton0534}；Edge bitrate re-adaptation（预测精度$\neq$QoE）~\cite{ton0491}。\\
+\textbf{动机}：Teleop-AV（双向体积流）~\cite{ton0580}。
+
+\section{讨论与局限}
+\begin{itemize}
+  \item 能耗为文献建模值，非真机实测；92\,°C/20\,W 模型 artifact 须校准。
+  \item 3 seeds 不足；无置信区间。
+  \item 预测失效边界未解释。
+  \item 三套 Green 实现禁止混用；建议 trace-driven 为主线、green/ 作支撑。
+  \item \textbf{Pred+Green 当前未实现联合}，统一性为设想。
+  \item \textbf{方案 A（统一）}需证据：Pred+Green 联合实验 + 预测-能耗耦合机制 + 扰动界。
+  \item \textbf{方案 B（Green 主线，Prediction 作 future extension）}：若联合实验显示预测对能耗无增益，需 Green 主线 $\geq$10 seed + 能耗校准 + R1 对比。\textbf{当前证据不足以确定 A/B。}
+\end{itemize}
+
+\section{结论}
+将 Plum 扩展为预测驱动、能耗感知的双向带宽协调，给出统一多目标框架与实现，及初步结果。统一性、预测失效边界、统计严谨性、能耗校准为投稿前必须补齐项。\todoexp{全部 P0 后定稿}
+
+\bibliographystyle{IEEEtran}
+\bibliography{refs}
+
+\end{document}

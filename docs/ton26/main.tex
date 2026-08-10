@@ -1,0 +1,91 @@
+\documentclass[journal]{IEEEtran}
+
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{cite}
+\usepackage{microtype}
+\usepackage{url}
+\usepackage[hidelinks]{hyperref}
+
+\interdisplaylinepenalty=2500
+
+\title{Green-PLUM: Energy-Aware Bidirectional Bandwidth Coordination for Video Conferencing}
+
+\author{Author Name(s)}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This document is the initial manuscript skeleton for a planned submission to
+\emph{IEEE/ACM Transactions on Networking}. It extends PLUM with energy- and
+thermal-aware bidirectional bandwidth coordination for mobile video
+conferencing. Replace this placeholder abstract after the problem statement,
+method, and evaluation scope are finalized.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Video conferencing, bidirectional bandwidth coordination, energy efficiency,
+thermal management, quality of experience.
+\end{IEEEkeywords}
+
+\section{Introduction}
+\IEEEPARstart{M}{obile} video conferencing must jointly manage uplink and
+downlink traffic under shared or half-duplex bottlenecks. PLUM established the
+baseline coordination framework~\cite{plum2024}. This manuscript studies how
+device battery state and thermal constraints can be incorporated without
+discarding PLUM's network-level benefits.
+
+\section{Motivation and Problem Statement}
+% TODO: Explain the limitations of QoE-only allocation and define the target
+% operating scenarios, device state, and optimization objectives.
+
+\section{System Model}
+% TODO: Describe the SFU architecture, bottleneck model, rate variables,
+% battery model, power model, and thermal dynamics.
+
+\section{Green-PLUM Design}
+% TODO: Present the objective, constraints, solver protocol, state updates,
+% and compatibility with the original PLUM control loop.
+
+\section{Implementation}
+% TODO: Document the NS-3.37 videoconf module changes, Python/SLSQP solver,
+% trace-driven setup, and experiment flags.
+
+\section{Evaluation}
+% TODO: Separate standalone model results, model-based Wi-Fi experiments, and
+% trace-driven packet-level experiments. Do not mix their claims.
+
+\begin{table}[t]
+  \caption{Placeholder for the Main Evaluation Summary}
+  \label{tab:summary}
+  \centering
+  \begin{tabular}{lccc}
+    \toprule
+    Policy & Network QoE & Energy & Survival \\
+    \midrule
+    Vanilla & TBD & TBD & TBD \\
+    PLUM & TBD & TBD & TBD \\
+    Green-PLUM & TBD & TBD & TBD \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{Related Work}
+% TODO: Cover bidirectional coordination, mobile video energy measurement,
+% codec/network power models, and thermal-aware systems.
+
+\section{Discussion and Limitations}
+% TODO: State which energy values are literature-calibrated models rather than
+% measurements, and discuss the QoE--energy tradeoff and generalizability.
+
+\section{Conclusion}
+% TODO: Summarize only claims supported by the final validated experiments.
+
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\end{document}
